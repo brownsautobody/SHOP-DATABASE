@@ -88,6 +88,9 @@ Pages:
 - **Jobs** - every job with its current estimate's printed numbers: body / refinish / mechanical / total hours, labor $,
   parts $, tax $, grand total, plus a totals row. Search by RO #, customer, VIN, claim # or insurance; filter by the
   estimate's printed date (date range, or This month / Last month / This year).
+- Every stored document is named **LAST-RO-TYPE.pdf** (e.g. `BOATMAN-4403-PRELIM-SUPPLEMENT-1.pdf`; no RO # yet:
+  `LAST-TYPE.pdf`), from the job's customer and RO # and the document's title - `doc_file_name()` in
+  `estimate_parser/core.py`. The name it was uploaded with is kept too.
 - **One page per job** - labor hours and totals as printed, a tab per estimate version, job details (RO # editable),
   and its documents with their PDFs. The page is a list of sections (`JOB_SECTIONS` in `estimate_parser/render.py`) -
   a new feature adds a section.

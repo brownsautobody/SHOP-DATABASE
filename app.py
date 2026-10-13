@@ -8,7 +8,7 @@ from sqlalchemy import select
 from db.models import EstimateDocument, File, Job
 from db.save import save_parse, set_field
 from db.session import DATA_DIR, init_db, make_engine
-from estimate_parser.core import NUMBER_FIELDS, job_numbers, parse_pdf, version_key
+from estimate_parser.core import NUMBER_FIELDS, doc_file_name, doc_type_name, job_numbers, parse_pdf, version_key
 from estimate_parser.render import job_page, jobs_list, upload_form
 
 app = Flask(__name__)
@@ -37,6 +37,18 @@ def index():
 
 def _vehicle(job):
     return job.current_document.parse["summary"]["vehicle"] if job.current_document else ""
+
+
+def doc_names(job):
+    """{document id: file name} for a job's documents, by the shop's naming convention (LAST-RO-TYPE.pdf). Documents
+    with the same title are numbered oldest first by print date (...-ESTIMATE.pdf, then ...-ESTIMATE-2.pdf)."""
+    customer = job.customer.name if job.customer else ""
+    seen, names = {}, {}
+    for d in sorted(job.documents, key=lambda d: (d.printed_at or "", d.id)):
+        t = doc_type_name(d.stage, d.supplement_no)
+        seen[t] = seen.get(t, 0) + 1
+        names[d.id] = doc_file_name(customer, job.ro_number, t, seen[t])
+    return names
 
 
 def _periods(today):
@@ -87,8 +99,10 @@ def job(job_id):
                 "loss_date": j.loss_date, "current_id": j.current_document_id}
         docs = sorted(j.documents, key=lambda d: version_key(
             {"supplement_no": d.supplement_no, "stage": d.stage, "printed_at": d.printed_at}))
-        versions = [{"id": d.id, "display": d.display, "printed": d.printed_at, "amount": d.supplement_amount,
-                     "needs_review": d.needs_review, "uploaded": d.created_at, "file_id": d.file_id} for d in docs]
+        names = doc_names(j)
+        versions = [{"id": d.id, "display": d.display, "name": names[d.id], "printed": d.printed_at,
+                     "amount": d.supplement_amount, "needs_review": d.needs_review, "uploaded": d.created_at,
+                     "file_id": d.file_id, "uploaded_as": d.file.original_name if d.file else ""} for d in docs]
         want = request.args.get("v", type=int) or j.current_document_id
         shown = next((d for d in docs if d.id == want), docs[-1] if docs else None)
         note = {"new": f"Estimate saved to this job ({len(docs)} version{'s' if len(docs) != 1 else ''}).",
@@ -117,9 +131,12 @@ def document(doc_id):
 
 @app.route("/files/<int:file_id>")
 def file(file_id):
+    """A stored PDF, named by the shop's convention (the name it was uploaded with is kept in the database)."""
     with Session() as s:
         f = s.get(File, file_id) or abort(404)
-        return send_file(f.path, mimetype=f.content_type, download_name=f.original_name)
+        d = s.scalar(select(EstimateDocument).where(EstimateDocument.file_id == f.id).limit(1))
+        name = doc_names(d.job)[d.id] if d else f.original_name
+        return send_file(f.path, mimetype=f.content_type, download_name=name)
 
 
 if __name__ == "__main__":

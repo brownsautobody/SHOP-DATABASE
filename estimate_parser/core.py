@@ -51,6 +51,25 @@ def classify_document(title, supplement_hint=None, context=""):
     return {"title_raw": title, "stage": stage, "supplement_no": n, "label": label}
 
 
+def doc_type_name(stage, supplement_no):
+    """What a document is, for its file name: ESTIMATE, SUPPLEMENT-2, PRELIM-SUPPLEMENT-1, ESTIMATE-OF-RECORD..."""
+    kind = f"SUPPLEMENT-{supplement_no}" if supplement_no else "ESTIMATE"
+    return {"preliminary": f"PRELIM-{kind}", "of_record": f"{kind}-OF-RECORD", "to_repair": f"{kind}-TO-REPAIR"}.get(stage, kind)
+
+
+def _name_part(text):
+    return re.sub(r"[^A-Z0-9]+", "-", (text or "").upper()).strip("-")
+
+
+def doc_file_name(customer, ro, type_name, n=1):
+    """The shop's naming convention for every stored document: LAST-RO-TYPE.pdf, e.g. BOATMAN-4403-PRELIM-SUPPLEMENT-1.pdf.
+    LAST is the last name ('Early, Amanda' -> EARLY); a name without a comma (a business) is used whole. No RO# yet ->
+    LAST-TYPE. n > 1 numbers a second document of the same type on the same job (...-ESTIMATE-2.pdf)."""
+    last = _name_part(customer.split(",")[0] if "," in (customer or "") else customer) or "UNKNOWN"
+    parts = [last, _name_part(ro), type_name + (f"-{n}" if n > 1 else "")]
+    return "-".join(p for p in parts if p) + ".pdf"
+
+
 def _parse_dt(text, fmts):
     for f in fmts:
         try:

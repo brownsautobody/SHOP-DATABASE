@@ -123,7 +123,7 @@ def _d(v):
 # One page per job. It is a list of sections; each takes the same context dict and returns HTML (or "" to skip).
 # A new feature adds one function to JOB_SECTIONS - nothing else on the page changes.
 #
-# ctx: job (dict), versions (list of dicts: id, display, printed, amount, needs_review, uploaded, file_id),
+# ctx: job (dict), versions (list of dicts: id, display, name, printed, amount, needs_review, uploaded, file_id, uploaded_as),
 #      shown (the version dict being shown), summary (that version's parse summary), note (shown once after an upload)
 
 LABOR_LABEL = {"Body labor": "Body", "Paint labor": "Refinish", "Mechanical labor": "Mechanical", "Other labor": "Other"}
@@ -144,9 +144,9 @@ def _job_versions(ctx):
         return "<p class='sub'>No estimate saved for this job yet.</p>"
     j, shown = ctx["job"], ctx["shown"]
     tabs = "".join(
-        f"<a class='tab{' on' if v['id'] == shown['id'] else ''}' href='/jobs/{j['id']}?v={v['id']}'>{escape(v['display'])}"
+        f"<a class='tab{' on' if v['id'] == shown['id'] else ''}' href='/jobs/{j['id']}?v={v['id']}'>{escape(v['name'].removesuffix('.pdf'))}"
         f"{' <span>current</span>' if v['id'] == j['current_id'] else ''}</a>" for v in reversed(ctx["versions"]))
-    pdf = f" &middot; <a href='/files/{shown['file_id']}'>Open PDF</a>" if shown["file_id"] else ""
+    pdf = f" &middot; <a href='/files/{shown['file_id']}'>Open {escape(shown['name'])}</a>" if shown["file_id"] else ""
     older = "" if shown["id"] == j["current_id"] else " &middot; <b>older version</b> - the current one is the newest"
     return (f"<div class='tabs'>{tabs}</div><p class='sec' style='margin:-4px 0 12px'>Printed {_dt(shown['printed']) or '?'}"
             f"{pdf}{older}</p>")
@@ -190,16 +190,17 @@ def _job_details(ctx):
 
 
 def _job_documents(ctx):
-    """Every estimate document filed for the job, with its PDF."""
+    """Every document filed for the job, named LAST-RO-TYPE.pdf, with the name it was uploaded as."""
     if not ctx["versions"]:
         return ""
     rows = "".join(
-        f"<tr><td><a href='/jobs/{ctx['job']['id']}?v={v['id']}'>{escape(v['display'])}</a>"
-        f"{' (current)' if v['id'] == ctx['job']['current_id'] else ''}</td><td>{_dt(v['printed'])}</td>"
-        f"<td class='n'>{_n(v['amount'], 2, '$')}</td><td>{_dt(v['uploaded'])}</td>"
-        f"<td>{f'<a href=\"/files/{v['file_id']}\">PDF</a>' if v['file_id'] else ''}</td></tr>" for v in reversed(ctx["versions"]))
-    return ("<h2>Documents</h2><div class='wrap'><table><thead><tr><th>Estimate</th><th>Printed</th>"
-            f"<th class='n'>Supplement amount</th><th>Uploaded</th><th></th></tr></thead><tbody>{rows}</tbody></table></div>")
+        f"<tr><td><a href='/files/{v['file_id']}'>{escape(v['name'])}</a>"
+        f"{' (current)' if v['id'] == ctx['job']['current_id'] else ''}"
+        f"<div class='sec'>uploaded as {escape(v['uploaded_as'])}</div></td>"
+        f"<td><a href='/jobs/{ctx['job']['id']}?v={v['id']}'>{escape(v['display'])}</a></td><td>{_dt(v['printed'])}</td>"
+        f"<td class='n'>{_n(v['amount'], 2, '$')}</td><td>{_dt(v['uploaded'])}</td></tr>" for v in reversed(ctx["versions"]))
+    return ("<h2>Documents</h2><div class='wrap'><table><thead><tr><th>File</th><th>Title on the document</th>"
+            f"<th>Printed</th><th class='n'>Supplement amount</th><th>Uploaded</th></tr></thead><tbody>{rows}</tbody></table></div>")
 
 
 JOB_SECTIONS = [_job_header, _job_versions, _job_review, _job_numbers, _job_details, _job_documents]
