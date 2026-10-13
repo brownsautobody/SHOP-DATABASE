@@ -1,5 +1,6 @@
 """Store a parse_pdf() result: find or create the job, keep the PDF, add a new estimate version."""
 import hashlib
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -19,15 +20,21 @@ def audit(s, table, row_id, action, field="", old=None, new=None, user_id=None, 
                    old_value=None if old is None else str(old), new_value=None if new is None else str(new)))
 
 
-def set_field(s, obj, field, value, user_id=None, job_id=None):
-    """Change one field and log it. Returns True if it changed."""
+def set_field(s, obj, field, value, user_id=None, job_id=None, action="update"):
+    """Change one field and log it. Returns True if it changed. action="manual" marks a value a person typed in."""
     old = getattr(obj, field)
     if old == value:
         return False
     setattr(obj, field, value)
     obj.updated_by = user_id
-    audit(s, obj.__tablename__, obj.id, "update", field, old, value, user_id, job_id)
+    audit(s, obj.__tablename__, obj.id, action, field, old, value, user_id, job_id)
     return True
+
+
+def typed_by_hand(s, job, field):
+    """True if a person has ever set this job field (logged with action 'manual'); estimates then never change it."""
+    return s.scalar(select(AuditLog.id).where(AuditLog.table_name == "jobs", AuditLog.row_id == job.id,
+                                              AuditLog.field == field, AuditLog.action == "manual").limit(1)) is not None
 
 
 def _get_or_create(s, model, where, **values):
@@ -39,14 +46,26 @@ def _get_or_create(s, model, where, **values):
     return row
 
 
-def find_job(s, shop_id, ro, claim):
-    """The job with the same RO#, then the same claim #. Every job is archived, so all jobs are searched. VIN is not
-    used: the same car can come back later as a new job with a new RO# and claim."""
+VIN_MATCH_DAYS = 90  # same car within this many days (by printed date) = same job, unless the claim #s differ
+
+
+def find_job(s, shop_id, ro, claim, vin="", printed=""):
+    """The job this estimate belongs to: same RO#, then same claim #, then same VIN printed within VIN_MATCH_DAYS of
+    the job's current estimate with no conflicting claim #. An estimate often prints no claim # (and sometimes a
+    different RO# than the final bill); the same car coming back months later on a new claim is a new job."""
     jobs = select(Job).where(Job.shop_id == shop_id)
     for cond in ((Job.ro_number == ro) if ro else None, (Job.claim_no == claim) if claim else None):
         if cond is not None:
             job = s.scalar(jobs.where(cond).order_by(Job.id.desc()).limit(1))
             if job:
+                return job
+    if vin and printed:
+        when = datetime.fromisoformat(printed)
+        for job in s.scalars(jobs.where(Job.vehicle.has(Vehicle.vin == vin)).order_by(Job.id.desc())):
+            cur = job.current_document
+            if claim and job.claim_no and claim != job.claim_no:
+                continue
+            if cur and cur.printed_at and abs((datetime.fromisoformat(cur.printed_at) - when).days) <= VIN_MATCH_DAYS:
                 return job
     return None
 
@@ -73,7 +92,7 @@ def save_parse(s, result, pdf_bytes, files_dir, user_id=None):
 
     shop_id = s.scalar(select(Shop.id).order_by(Shop.id).limit(1))
     m, h, v = result["summary"], result["header"], result["header"]["vehicle"]
-    job = find_job(s, shop_id, m["ro_number"], m["claim"])
+    job = find_job(s, shop_id, m["ro_number"], m["claim"], m["vin"], result["document"]["printed_at"])
     if job is None:
         name = m["customer"].strip()
         customer = _get_or_create(s, Customer, [Customer.shop_id == shop_id, func.lower(Customer.name) == name.lower()],
@@ -144,8 +163,12 @@ def _totals(result):
 
 
 def _set_current(s, job, user_id):
-    """Point the job at its newest estimate version."""
+    """Point the job at its newest estimate version. The job's RO# follows the newest version that prints one (the
+    final bill can print a different RO# than the first estimate) unless a person typed the RO# in."""
     s.refresh(job, ["documents"])
-    newest = max(job.documents, key=lambda x: version_key(
-        {"supplement_no": x.supplement_no, "stage": x.stage, "printed_at": x.printed_at}))
-    set_field(s, job, "current_document_id", newest.id, user_id, job.id)
+    by_age = sorted(job.documents, key=lambda x: version_key(
+        {"supplement_no": x.supplement_no, "stage": x.stage, "printed_at": x.printed_at}), reverse=True)
+    set_field(s, job, "current_document_id", by_age[0].id, user_id, job.id)
+    ro = next((d.parse["summary"]["ro_number"] for d in by_age if d.parse["summary"]["ro_number"]), "")
+    if ro and ro != job.ro_number and not typed_by_hand(s, job, "ro_number"):
+        set_field(s, job, "ro_number", ro, user_id, job.id)

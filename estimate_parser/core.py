@@ -5,7 +5,7 @@ from datetime import datetime
 from . import ccc, mitchell
 from .pdfutil import open_pages, page_text
 
-PARSER_VERSION = "2026.10.13"  # saved with each document; bump when parsing changes so old saves can be re-read
+PARSER_VERSION = "2026.10.13b"  # saved with each document; bump when parsing changes so old saves can be re-read
 PRICED = {"Part", "Other Charge", "Sublet"}
 LABOR_CATEGORIES = ["Body Labor", "Paint Labor", "Mechanical Labor", "Structural Labor",
                     "Frame Labor", "Electrical Labor", "Diagnostic Labor", "Glass Labor"]

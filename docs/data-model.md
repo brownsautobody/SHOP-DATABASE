@@ -58,8 +58,11 @@ to_repair | of_record | unknown), `supplement_no` (0 = original), `printed_at`, 
 
 ### How a supplement arrives
 1. Upload a PDF -> `parse_pdf()`.
-2. Find the job: RO# first, then claim # (any job - all jobs are archived; not VIN, since the same car can come
-   back as a new job). None found -> new job, filed straight into the archive (`archived_at` set).
+2. Find the job (any job - all are archived): RO# first, then claim #, then the same VIN with an estimate printed
+   within 90 days and no conflicting claim # (`find_job()` in `db/save.py`). The first estimate often prints no claim #
+   and sometimes a different RO# than the final bill; the same car back months later on a new claim is a new job.
+   None found -> new job, filed straight into the archive (`archived_at` set). The job's RO# follows the newest
+   document that prints one, unless a person typed it in.
 3. Add a new `estimate_documents` row with its lines and totals. Nothing older is touched.
 4. `jobs.current_document_id` points at the newest version, chosen by `version_key()` in
    `estimate_parser/core.py`: highest `supplement_no`, then stage rank (unknown < preliminary < estimate < to_repair

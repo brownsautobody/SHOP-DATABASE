@@ -79,7 +79,8 @@ The app's job for now: **a clean, organized archive of completed jobs and their 
 tracking financials and performance and for bookkeeping exports later.
 
 Every uploaded estimate is filed straight into the archive with its job. It is matched to an existing job by RO #,
-then claim # (not VIN - the same car can come back as a new job); a supplement becomes a new version of the same job
+then claim #, then the same VIN within 90 days (the first estimate often has no claim # and sometimes a different
+RO# than the final bill; the same car back months later is a new job). The job's RO# follows its newest document; a supplement becomes a new version of the same job
 and the newest version becomes the job's current estimate. Uploading the same PDF twice keeps one copy.
 
 Pages:

@@ -142,6 +142,10 @@ def parse_items(pages):
             first = r["words"][0]
             n = int(first["text"]) if first["text"].isdigit() and first["x0"] < 45 else None
             last = state["last"]
+            # an "Open Line" (O column checked in CCC) prints 'open' where its line number goes; it is still a line
+            is_open = n is None and started and first["text"].lower() == "open" and first["x0"] < 45
+            if is_open:
+                n = (last or 0) + 1
             if n is not None and ((last is None and n <= 5) or n == (last or 0) + 1):
                 started = True
                 state["last"] = n
@@ -149,6 +153,8 @@ def parse_items(pages):
                 if "section_only" in item:
                     state["section"] = item["section_only"]
                     continue
+                if is_open:
+                    item["flags"].append("open line")
                 items.append(item)
             elif started and items:
                 cont = [w["text"] for w in r["words"] if w["x0"] >= cols["oper_x0"] - 3 and w["x0"] < cols["text_end"]]
@@ -258,8 +264,8 @@ def _band_values(rows, label_words, take=2):
 def parse_header(pages):
     rows = group_rows(pages[0])
     text = page_text(pages[0])
-    h = {}
-    m = re.search(r"RO Number:\s*(\S+)", text)
+    h = {}  # after each label match spaces only, not line breaks: a blank field stays blank instead of reading the next line
+    m = re.search(r"RO Number:[ \t]*(\S+)", text)
     h["ro_number"] = m.group(1) if m else ""
     m = re.search(r"^(Estimate|Preliminary[^\n]*|Supplement[^\n]*|Final[^\n]*)$", text, re.M)
     h["document"] = m.group(1).strip() if m else "Estimate"
@@ -280,16 +286,16 @@ def parse_header(pages):
     else:
         m = re.search(r"Insured:[ 	]*(.*?)\s+Policy #:", text)
         h["customer"] = m.group(1).strip() if m else ""
-        m = re.search(r"Written By:\s*(.+)", text)
+        m = re.search(r"Written By:[ \t]*(.+)", text)
         h["estimator"] = m.group(1).strip() if m else ""
-        m = re.search(r"Adjuster:\s*(.+)", text)
+        m = re.search(r"Adjuster:[ \t]*(.+)", text)
         h["adjuster"] = m.group(1).strip() if m else ""
-        m = re.search(r"Claim #:\s*(\S+)", text)
+        m = re.search(r"Claim #:[ \t]*(\S+)", text)
         h["claim"] = m.group(1) if m else ""
         m = re.search(r"Insurance Company:\s*\n?.*?\n(.*)", text)
         cols = _band_values(rows, ["Owner:", "Inspection", "Insurance"], take=1)
         h["insurance"] = cols.get("Insurance", "").title()
-        m = re.search(r"Date of Loss:\s*(\S+)", text)
+        m = re.search(r"Date of Loss:[ \t]*(\S+)", text)
         h["loss_date"] = m.group(1) if m else ""
         phones = re.findall(r"\(\d{3}\) \d{3}-\d{4}", text)
         h["phone"] = next((p for p in phones[1:] if p != phones[0]), "")
@@ -303,9 +309,9 @@ def parse_header(pages):
         "year": ym.group(1) if ym else "", "make": ym.group(2) if ym else "",
         "model": ym.group(3) if ym else veh, "description": veh,
     }
-    m = re.search(r"VIN:\s*([A-HJ-NPR-Z0-9]{17})", text)
+    m = re.search(r"VIN:[ \t]*([A-HJ-NPR-Z0-9]{17})", text)
     h["vehicle"]["vin"] = m.group(1) if m else ""
-    m = re.search(r"Mileage In:\s*([\d,]+)", text)
+    m = re.search(r"Mileage In:[ \t]*([\d,]+)", text)
     h["vehicle"]["mileage"] = m.group(1) if m else ""
     return h
 

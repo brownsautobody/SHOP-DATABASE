@@ -102,7 +102,7 @@ def job(job_id):
 def set_ro(job_id):
     with Session() as s:
         j = s.get(Job, job_id) or abort(404)
-        set_field(s, j, "ro_number", request.form.get("ro", "").strip(), job_id=j.id)
+        set_field(s, j, "ro_number", request.form.get("ro", "").strip(), job_id=j.id, action="manual")
         s.commit()
     return redirect(f"/jobs/{job_id}")
 
