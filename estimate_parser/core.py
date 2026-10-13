@@ -5,7 +5,7 @@ from datetime import datetime
 from . import ccc, mitchell
 from .pdfutil import open_pages, page_text
 
-PARSER_VERSION = "2026.09.23b"  # saved with each document; bump when parsing changes so old saves can be re-read
+PARSER_VERSION = "2026.10.13"  # saved with each document; bump when parsing changes so old saves can be re-read
 PRICED = {"Part", "Other Charge", "Sublet"}
 LABOR_CATEGORIES = ["Body Labor", "Paint Labor", "Mechanical Labor", "Structural Labor",
                     "Frame Labor", "Electrical Labor", "Diagnostic Labor", "Glass Labor"]
@@ -132,6 +132,16 @@ def _checks(fmt, charges, totals, subtotals):
         got = round(sum(hours(c) for c in cats), 2)
         checks.append({"name": f"{label} hours", "parsed": got, "expected": exp, "ok": _close(got, exp, 0.01)})
 
+    # total hours: every labor line of any type vs the estimate's own total. Mitchell prints a Total Labor row; CCC
+    # prints one row per labor type (Paint Supplies hours are materials, not labor - they can differ by the clear-coat cap)
+    rows = [t for t in totals if t["hours"] is not None and t["label"].endswith(" Labor") and t["label"] != "Total Labor"]
+    exp = by_label.get("Total Labor", {}).get("hours")
+    if exp is None and rows:
+        exp = round(sum(t["hours"] for t in rows), 2)
+    if exp is not None:
+        got = round(sum(c["hours"] for c in charges if c["hours"] is not None and c["category"].endswith(" Labor")), 2)
+        checks.append({"name": "Total labor hours", "parsed": got, "expected": exp, "ok": _close(got, exp, 0.01)})
+
     price_total = round(sum(c["amount"] for c in charges if c["category"] in PRICED and c["amount"] is not None), 2)
     if fmt == "CCC ONE":
         exp = subtotals[0] if subtotals else by_label.get("Parts", {}).get("amount")
@@ -242,6 +252,30 @@ def _short_model(model):
     return " ".join(parts[:2]) if parts[0][0].isdigit() and len(parts) > 1 else parts[0]
 
 
+NUMBER_FIELDS = ["body_hours", "refinish_hours", "mechanical_hours", "other_hours", "total_hours",
+                 "labor_amount", "parts", "tax", "grand_total"]
+
+
+def job_numbers(r):
+    """The money and hours a job is tracked by, all as printed on the estimate (None when it doesn't print one).
+    The one place lists, totals and exports read from - add a field here and every report can use it."""
+    s = r["summary"]
+    hours = {x["category"]: x["hours"] for x in s["labor"]}
+    by = {}
+    for t in r["totals"]:
+        by.setdefault(t["label"], t)
+    grand = (by.get("Grand Total") or by.get("Gross Total") or {}).get("amount")
+    if r["format"] == "Mitchell":  # one 'Tax' row for the whole estimate (the others are per section)
+        tax = by.get("Tax", {}).get("amount")
+    else:  # CCC prints each tax on its own row (sales, county, municipal...)
+        taxes = [t["amount"] for t in r["totals"] if "Tax" in t["label"] and t["hours"] is None]
+        tax = round(sum(taxes), 2) if taxes else None
+    return {"body_hours": hours.get("Body labor"), "refinish_hours": hours.get("Paint labor"),
+            "mechanical_hours": hours.get("Mechanical labor"), "other_hours": hours.get("Other labor"),
+            "total_hours": s["total_labor_hours"], "labor_amount": s["total_labor_amount"], "parts": s["parts_total"],
+            "tax": tax, "grand_total": grand}
+
+
 def summarize(r):
     """The handful of fields the shop needs from an estimate."""
     h, v = r["header"], r["header"]["vehicle"]
@@ -250,8 +284,9 @@ def summarize(r):
     rates = {t["label"]: t["rate"] for t in totals if t.get("rate")}
 
     groups = {"Body": ["Body Labor"], "Paint": ["Paint Labor"], "Mechanical": ["Mechanical Labor"]}
-    other_cats = [c for c in LABOR_CATEGORIES if c not in sum(groups.values(), [])]
-    groups["Other"] = other_cats
+    # every other labor type - including ones the shop made up in CCC - so total hours never drop a line
+    seen = {c["category"] for c in charges if c["hours"] is not None and c["category"].endswith(" Labor")}
+    groups["Other"] = sorted((set(LABOR_CATEGORIES) | seen) - set(sum(groups.values(), [])))
     labor = []
     for name, cats in groups.items():
         rows = [c for c in charges if c["category"] in cats and c["hours"] is not None]

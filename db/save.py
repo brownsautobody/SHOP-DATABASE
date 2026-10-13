@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 
 from estimate_parser.core import PARSER_VERSION, version_key
 from .models import (AuditLog, Customer, EstimateDocument, EstimateLine, EstimateTotal, File, InsuranceCompany, Job,
-                     Shop, Vehicle)
+                     Shop, Vehicle, now)
 
 # job fields filled from the estimate; a value already on the job (e.g. typed in by hand) is never overwritten
 _JOB_FIELDS = {"ro_number": ("summary", "ro_number"), "claim_no": ("summary", "claim"),
@@ -39,14 +39,13 @@ def _get_or_create(s, model, where, **values):
     return row
 
 
-def find_job(s, shop_id, ro, claim, vin):
-    """Open job with the same RO#, then claim #, then VIN."""
-    open_jobs = select(Job).where(Job.shop_id == shop_id, Job.archived_at.is_(None))
-    for cond in ((Job.ro_number == ro) if ro else None,
-                 (Job.claim_no == claim) if claim else None,
-                 Job.vehicle.has(Vehicle.vin == vin) if vin else None):
+def find_job(s, shop_id, ro, claim):
+    """The job with the same RO#, then the same claim #. Every job is archived, so all jobs are searched. VIN is not
+    used: the same car can come back later as a new job with a new RO# and claim."""
+    jobs = select(Job).where(Job.shop_id == shop_id)
+    for cond in ((Job.ro_number == ro) if ro else None, (Job.claim_no == claim) if claim else None):
         if cond is not None:
-            job = s.scalar(open_jobs.where(cond).order_by(Job.id.desc()).limit(1))
+            job = s.scalar(jobs.where(cond).order_by(Job.id.desc()).limit(1))
             if job:
                 return job
     return None
@@ -74,7 +73,7 @@ def save_parse(s, result, pdf_bytes, files_dir, user_id=None):
 
     shop_id = s.scalar(select(Shop.id).order_by(Shop.id).limit(1))
     m, h, v = result["summary"], result["header"], result["header"]["vehicle"]
-    job = find_job(s, shop_id, m["ro_number"], m["claim"], m["vin"])
+    job = find_job(s, shop_id, m["ro_number"], m["claim"])
     if job is None:
         name = m["customer"].strip()
         customer = _get_or_create(s, Customer, [Customer.shop_id == shop_id, func.lower(Customer.name) == name.lower()],
@@ -87,8 +86,9 @@ def save_parse(s, result, pdf_bytes, files_dir, user_id=None):
         insurance = _get_or_create(s, InsuranceCompany, [InsuranceCompany.shop_id == shop_id,
                                                           func.lower(InsuranceCompany.name) == ins.lower()],
                                    shop_id=shop_id, name=ins, created_by=user_id) if ins else None
+        # filed straight into the archive: the app stores completed jobs and their estimates
         job = Job(shop_id=shop_id, customer=customer, vehicle=vehicle, insurance=insurance, created_by=user_id,
-                  **{f: result[src].get(key) or "" for f, (src, key) in _JOB_FIELDS.items()})
+                  archived_at=now(), **{f: result[src].get(key) or "" for f, (src, key) in _JOB_FIELDS.items()})
         s.add(job)
         s.flush()
         audit(s, "jobs", job.id, "create", user_id=user_id, job_id=job.id)

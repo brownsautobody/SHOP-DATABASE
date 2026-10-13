@@ -58,7 +58,8 @@ to_repair | of_record | unknown), `supplement_no` (0 = original), `printed_at`, 
 
 ### How a supplement arrives
 1. Upload a PDF -> `parse_pdf()`.
-2. Find the job: RO# first, then claim #, then VIN. None found -> new job.
+2. Find the job: RO# first, then claim # (any job - all jobs are archived; not VIN, since the same car can come
+   back as a new job). None found -> new job, filed straight into the archive (`archived_at` set).
 3. Add a new `estimate_documents` row with its lines and totals. Nothing older is touched.
 4. `jobs.current_document_id` points at the newest version, chosen by `version_key()` in
    `estimate_parser/core.py`: highest `supplement_no`, then stage rank (unknown < preliminary < estimate < to_repair
@@ -67,14 +68,14 @@ to_repair | of_record | unknown), `supplement_no` (0 = original), `printed_at`, 
 
 ## Later features - tables they add
 
-### Live production board (first part built - `db/production.py`, Active jobs page, Settings page)
-- **Built:** `production_stages` - name, display order, active (edited on Settings). Starts with Blueprint,
-  Body Work, Paint, Reassembly, Detail. A job with no stage yet is "Not started".
-- **Built:** `job_stage_events` - job, from stage, to stage, moved by, moved at, note. Gives "dropped off Monday, in
-  paint Wednesday" and time spent in each stage. Moving a job = new event row + update `jobs.current_stage_id`.
-- **Built:** `job_assignments` - job, employee, role (`tech` | `estimator`), assigned at/by, removed at. One current
-  tech and one current estimator per job; a change ends the old row, so hand-offs are kept. Employees are `users`
-  rows (a placeholder login until real logins exist). `jobs.estimator` stays the name *printed on the estimate*.
+### Live production board (on hold)
+A first version was built (commit 44a75d4: stages Blueprint / Body Work / Paint / Reassembly / Detail, one current tech
+and estimator per job, stage history, Settings page) and then **removed** so the app could focus on the job archive.
+It can be brought back from git history. Tables it used:
+- `production_stages` - name, display order, active.
+- `job_stage_events` - job, from stage, to stage, moved by, moved at, note. Moving a job = new event row + update
+  `jobs.current_stage_id`.
+- `job_assignments` - job, employee, role (`tech` | `estimator`), assigned at/by, removed at.
 - `time_entries` (optional, later) - employee clocks hours on a job: actual vs estimated hours from
   `estimate_lines`.
 
@@ -121,10 +122,10 @@ questions; looked up with `tools/kb_search.py`.
 
 ## Build order
 1. Core tables + save each parsed estimate (built).
-2. Web login + admin page (employees and stages are on Settings; logins not yet).
-3. Live production page (stage events, assignments - first part built; closing a job next).
-4. Communication log.
-5. Parts receiving.
+2. Job archive: every upload filed with its job; list with printed hours and dollars, search, date filter (built).
+3. Bookkeeping export and financial / performance tracking, from `job_numbers()` (next).
+4. Web login + admin page.
+5. Live production page, closing a job, communication log, parts receiving (later).
 
 Each step only adds tables; nothing built earlier changes shape.
 

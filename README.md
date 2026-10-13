@@ -73,19 +73,32 @@ Part, Body / Paint / Mechanical (and Structural, Frame...) Labor, Sublet or Othe
 the estimate's own totals (labor hours by type, parts/charges total, supplement history). If a check fails or the
 document type / print time can't be read, the page shows a red "Needs review" box listing why.
 
-## Phase 2 status: core database built
+## Phase 2 status: job archive built
 
-Every uploaded estimate is saved. It is matched to its job by RO #, then claim #, then VIN; a supplement becomes a
-new version of the same job and the newest version becomes the job's current estimate. Pages: **Upload estimate**,
-**Active jobs** (all open jobs, with each job's stage, tech and estimator editable in the table and tabs per
-stage), a job page (RO # editing, production stage and people, stage history, estimate versions with their PDFs,
-change log) and **Settings** (production stages and employees). Uploading the same PDF twice keeps one copy.
+The app's job for now: **a clean, organized archive of completed jobs and their estimate documents**, the base for
+tracking financials and performance and for bookkeeping exports later.
+
+Every uploaded estimate is filed straight into the archive with its job. It is matched to an existing job by RO #,
+then claim # (not VIN - the same car can come back as a new job); a supplement becomes a new version of the same job
+and the newest version becomes the job's current estimate. Uploading the same PDF twice keeps one copy.
+
+Pages:
+- **Upload estimate**
+- **Jobs** - every job with its current estimate's printed numbers: body / refinish / mechanical / total hours, labor $,
+  parts $, tax $, grand total, plus a totals row. Search by RO #, customer, VIN, claim # or insurance; filter by the
+  estimate's printed date (date range, or This month / Last month / This year).
+- **One page per job** - labor hours and totals as printed, a tab per estimate version, job details (RO # editable),
+  and its documents with their PDFs. The page is a list of sections (`JOB_SECTIONS` in `estimate_parser/render.py`) -
+  a new feature adds a section.
+
+The numbers in the list come from one function, `job_numbers()` in `estimate_parser/core.py` - the same numbers a
+bookkeeping export will use. Every change is still recorded in `audit_log`; it just isn't shown.
 
 To try things without touching the real data, load the sample PDFs into a separate test database:
 
 ```
-set SHOP_DATA_DIR=data\test
-python tools/load_samples.py --employees
+set SHOP_DATA_DIR=data	est
+python tools/load_samples.py
 python app.py
 ```
 
@@ -107,13 +120,13 @@ Put test PDFs in `samples/` (ignored by git so customer data stays local).
 - `estimate_parser/ccc.py`, `mitchell.py` - one parser per format (header, line items, totals)
 - `estimate_parser/core.py` - format detection, `parse_pdf()`, validation checks
 - `estimate_parser/render.py` - HTML pages
-- `db/models.py` - database tables; `db/save.py` - `save_parse()` and change logging; `db/session.py` - connection;
-  `db/production.py` - stages, stage moves, tech/estimator assignments, employees
-- `tools/load_samples.py` - save every PDF in `samples/` into the database (for a test copy)
+- `db/models.py` - database tables; `db/save.py` - `save_parse()` and change logging; `db/session.py` - connection
+- `tools/load_samples.py` - save every PDF in `samples/` into the database (for a test copy);
+  `tools/archive_open_jobs.py` - one-time: file jobs saved before uploads went straight to the archive
 - `kb/ccc_help.py` - copies CCC's public help center (cccis.zendesk.com, through its public Help Center API) into the
   knowledge base; `tools/sync_ccc_kb.py` runs it. The knowledge base has no screen in the app - it is reference for
   reading estimates correctly (labor hours, totals) and for technical questions: `tools/kb_search.py labor hours`,
   `--show <id>` for one article, `--tree` for the whole tree
 - `app.py` - the web app
-- `docs/data-model.md` - database design for the web app (jobs, estimates, production board, customer
+- `docs/data-model.md` - database design for the web app (jobs, estimates, archive, later: production board, customer
   communication, parts receiving) and the order to build it in
