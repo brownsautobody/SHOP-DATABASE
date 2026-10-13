@@ -105,6 +105,20 @@ to_repair | of_record | unknown), `supplement_no` (0 = original), `printed_at`, 
   estimate's printed part # and price stay as they are beside it; a mismatch is shown for a person to resolve,
   never corrected automatically.
 
+### Knowledge base (first source built)
+Reference knowledge kept apart from job data: CCC's documentation now; shop rules and context, shop policies and
+references to other shop estimates later - each as its own source in the same tables. **Not shown to the shop's
+users** - it is context for reading estimate PDFs correctly (labor hours by type, totals) and for answering technical
+questions; looked up with `tools/kb_search.py`.
+- `kb_sources` - name, kind (`web_docs` | `shop_policy` | `estimate_reference`), base URL, last synced.
+- `kb_nodes` - the tree: category / section / article, `parent_id`, title, original URL, order, the page as HTML and as
+  plain text (searchable), when the source last updated it. Gone from the source -> `active = false`, never deleted.
+- `kb_revisions` - the previous title/body whenever the source changes a page.
+- `kb_links` - every link and picture in a page; links to another page in the knowledge base point at its node, so
+  "links from" and "linked from" both work.
+- CCC: `kb/ccc_help.py` reads cccis.zendesk.com through Zendesk's public Help Center API (the web pages block
+  automated visitors; robots.txt allows the API). 1 category, 17 sections, 555 articles. Pictures are kept as links.
+
 ## Build order
 1. Core tables + save each parsed estimate (built).
 2. Web login + admin page (employees and stages are on Settings; logins not yet).

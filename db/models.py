@@ -200,6 +200,58 @@ class JobAssignment(Base):
     user: Mapped[User] = relationship(foreign_keys=[user_id])
 
 
+class KbSource(Tracked, Base):
+    """A body of reference knowledge: CCC's help center now; shop policies and reference estimates later."""
+    __tablename__ = "kb_sources"
+    shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id"))
+    name: Mapped[str] = mapped_column(String(120))
+    kind: Mapped[str] = mapped_column(String(30))  # web_docs, shop_policy, estimate_reference
+    base_url: Mapped[str] = mapped_column(String(300), default="")
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class KbNode(Base):
+    """One category, section or article. parent_id makes the tree. Removed upstream = active False, never deleted."""
+    __tablename__ = "kb_nodes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("kb_sources.id"), index=True)
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("kb_nodes.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # category, section, article
+    external_id: Mapped[str] = mapped_column(String(40), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    url: Mapped[str] = mapped_column(String(500), default="")
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    body_html: Mapped[str] = mapped_column(Text, default="")
+    body_text: Mapped[str] = mapped_column(Text, default="")
+    source_updated_at: Mapped[str] = mapped_column(String(30), default="")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class KbRevision(Base):
+    """The previous version of a node, kept when the source changes it (rule 2)."""
+    __tablename__ = "kb_revisions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    node_id: Mapped[int] = mapped_column(ForeignKey("kb_nodes.id"), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    body_html: Mapped[str] = mapped_column(Text, default="")
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    source_updated_at: Mapped[str] = mapped_column(String(30), default="")
+    replaced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class KbLink(Base):
+    """A link or image inside a node's body; to_node_id is set when it points at another node in the knowledge base."""
+    __tablename__ = "kb_links"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    from_node_id: Mapped[int] = mapped_column(ForeignKey("kb_nodes.id"), index=True)
+    to_node_id: Mapped[int | None] = mapped_column(ForeignKey("kb_nodes.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # article, external, image
+    text: Mapped[str] = mapped_column(String(300), default="")
+    href: Mapped[str] = mapped_column(String(1000))
+
+
 class AuditLog(Base):
     """Every change, for every table (rule 4). Append only."""
     __tablename__ = "audit_log"

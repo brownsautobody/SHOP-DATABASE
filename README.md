@@ -110,6 +110,10 @@ Put test PDFs in `samples/` (ignored by git so customer data stays local).
 - `db/models.py` - database tables; `db/save.py` - `save_parse()` and change logging; `db/session.py` - connection;
   `db/production.py` - stages, stage moves, tech/estimator assignments, employees
 - `tools/load_samples.py` - save every PDF in `samples/` into the database (for a test copy)
+- `kb/ccc_help.py` - copies CCC's public help center (cccis.zendesk.com, through its public Help Center API) into the
+  knowledge base; `tools/sync_ccc_kb.py` runs it. The knowledge base has no screen in the app - it is reference for
+  reading estimates correctly (labor hours, totals) and for technical questions: `tools/kb_search.py labor hours`,
+  `--show <id>` for one article, `--tree` for the whole tree
 - `app.py` - the web app
 - `docs/data-model.md` - database design for the web app (jobs, estimates, production board, customer
   communication, parts receiving) and the order to build it in
