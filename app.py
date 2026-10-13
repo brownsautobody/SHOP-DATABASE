@@ -9,7 +9,7 @@ from db.models import AuditLog, EstimateDocument, File, Job, JobAssignment, Prod
 from db.save import save_parse, set_field
 from db.session import DATA_DIR, init_db, make_engine
 from estimate_parser.core import parse_pdf
-from estimate_parser.render import job_page, jobs_list, results, settings_page, upload_form
+from estimate_parser.render import archive_btn, archive_list, job_page, jobs_list, results, settings_page, upload_form
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
@@ -106,6 +106,8 @@ def _describe(a, names):
         return "Job created" if a.table_name == "jobs" else f"Estimate uploaded: {a.new_value}"
     if a.field == "current_document_id":
         return "Current estimate changed"
+    if a.action in ("archive", "unarchive"):
+        return "Job archived" if a.action == "archive" else "Job moved back to active"
     if a.field == "current_stage_id":
         n = names["stage"]
         return f"Stage: {n.get(int(a.old_value), '?') if a.old_value else 'Not started'} -> " \
@@ -125,7 +127,7 @@ def job(job_id):
         info = {"id": j.id, "ro": j.ro_number, "customer": j.customer.name if j.customer else "", "vehicle": _vehicle(j),
                 "vin": j.vehicle.vin if j.vehicle else "", "insurance": j.insurance.name if j.insurance else "",
                 "claim": j.claim_no, "adjuster": j.adjuster, "estimator": j.estimator, "deductible": j.deductible,
-                "loss_date": j.loss_date, "current_id": j.current_document_id,
+                "loss_date": j.loss_date, "current_id": j.current_document_id, "archived_at": j.archived_at,
                 **_prod_row(j, people, prod.stage_since(s, [j.id]).get(j.id))}
         versions = [{"id": d.id, "display": d.display, "printed": d.printed_at, "amount": d.supplement_amount,
                      "needs_review": d.needs_review, "uploaded": d.created_at, "file_id": d.file_id}
@@ -146,6 +148,27 @@ def job(job_id):
         for role, key in (("tech", "techs"), ("estimator", "estimators")):
             _keep_current(opts, key, people.get(role))
         return job_page(info, versions, log, opts, history)
+
+
+@app.route("/jobs/<int:job_id>/archive", methods=["POST"])
+def archive_job(job_id):
+    with Session() as s:
+        j = s.get(Job, job_id) or abort(404)
+        prod.archive(s, j) if request.form.get("action") != "unarchive" else prod.unarchive(s, j)
+        s.commit()
+    back = request.form.get("next", "")
+    return redirect(back if back.startswith(("/jobs", "/archive", "/documents")) else f"/jobs/{job_id}")
+
+
+@app.route("/archive")
+def archived():
+    with Session() as s:
+        rows = s.scalars(select(Job).where(Job.archived_at.is_not(None)).order_by(Job.archived_at.desc())).all()
+        stage = {st.id: st.name for st in prod.stages(s, include_hidden=True)}
+        return archive_list([{
+            "id": j.id, "ro": j.ro_number, "customer": j.customer.name if j.customer else "", "vehicle": _vehicle(j),
+            "insurance": j.insurance.name if j.insurance else "", "stage": stage.get(j.current_stage_id, "Not started"),
+            "archived_at": j.archived_at} for j in rows])
 
 
 @app.route("/settings")
@@ -215,8 +238,11 @@ def document(doc_id):
     with Session() as s:
         d = s.get(EstimateDocument, doc_id) or abort(404)
         dup = "This PDF was already uploaded - showing the saved copy. " if request.args.get("dup") else "Saved to "
-        note = (f"<div class='note'>{dup}<a href='/jobs/{d.job_id}'>job {d.job.ro_number or '#' + str(d.job_id)}</a>"
-                f" ({len(d.job.documents)} version{'s' if len(d.job.documents) != 1 else ''}).</div>")
+        archived = d.job.archived_at is not None
+        note = (f"<div class='note row' style='justify-content:space-between'><span>{dup}"
+                f"<a href='/jobs/{d.job_id}'>job {d.job.ro_number or '#' + str(d.job_id)}</a>"
+                f" ({len(d.job.documents)} version{'s' if len(d.job.documents) != 1 else ''})"
+                f"{' - archived' if archived else ''}.</span>{archive_btn(d.job_id, archived, f'/documents/{doc_id}')}</div>")
         return results(d.parse, note)
 
 

@@ -49,6 +49,21 @@ def assign(s, job, role, user_id, by=None):
     return True
 
 
+def archive(s, job, by=None):
+    """Move a job off the active list. Nothing is deleted; its stage and people stay as they were."""
+    if job.archived_at is None:
+        job.archived_at = now()
+        job.updated_by = by
+        audit(s, "jobs", job.id, "archive", "archived_at", None, job.archived_at.isoformat(), by, job.id)
+
+
+def unarchive(s, job, by=None):
+    if job.archived_at is not None:
+        audit(s, "jobs", job.id, "unarchive", "archived_at", job.archived_at.isoformat(), None, by, job.id)
+        job.archived_at = None
+        job.updated_by = by
+
+
 def current_assignments(s, job_ids):
     """{job_id: {role: User}} for the people on each job now."""
     out = {j: {} for j in job_ids}

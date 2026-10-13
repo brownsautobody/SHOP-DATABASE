@@ -55,7 +55,7 @@ def _n(v, d=2, prefix=""):
     return "" if v is None else f"{prefix}{v:,.{d}f}"
 
 
-NAV = "<nav><b>Shop Database</b><a href='/'>Upload estimate</a><a href='/jobs'>Active jobs</a><a href='/settings'>Settings</a></nav>"
+NAV = "<nav><b>Shop Database</b><a href='/'>Upload estimate</a><a href='/jobs'>Active jobs</a><a href='/archive'>Archive</a><a href='/settings'>Settings</a></nav>"
 
 
 def page(body, title="Shop Database"):
@@ -112,6 +112,26 @@ def _days(since):
     return "today" if d == 0 else f"{d} day{'s' if d != 1 else ''}"
 
 
+def archive_btn(job_id, archived, back):
+    action, label = ("unarchive", "Move back to active") if archived else ("archive", "Archive")
+    return (f"<form method='post' action='/jobs/{job_id}/archive' class='row'><input type='hidden' name='action' "
+            f"value='{action}'><input type='hidden' name='next' value='{escape(back)}'>"
+            f"<button class='plain'>{label}</button></form>")
+
+
+def archive_list(jobs):
+    """Archived jobs. jobs: dicts with id, ro, customer, vehicle, insurance, stage, archived_at."""
+    rows = "".join(
+        f"<tr><td><a href='/jobs/{j['id']}'>{escape(j['ro']) or '&mdash;'}</a></td><td>{escape(j['customer'])}</td>"
+        f"<td>{escape(j['vehicle'])}</td><td>{escape(j['insurance'])}</td><td>{escape(j['stage'])}</td>"
+        f"<td>{_dt(j['archived_at'])}</td><td>{archive_btn(j['id'], True, '/archive')}</td></tr>" for j in jobs)
+    table = ("<div class='wrap'><table class='jobs'><thead><tr><th>RO #</th><th>Customer</th><th>Vehicle</th>"
+             "<th>Insurance</th><th>Last stage</th><th>Archived</th><th></th></tr></thead>"
+             f"<tbody>{rows}</tbody></table></div>") if jobs else "<p class='sub'>No archived jobs.</p>"
+    return page(f"<h1>Archive</h1><p class='sub'>{len(jobs)} archived job{'s' if len(jobs) != 1 else ''}. Nothing is "
+                f"deleted - open a job to see all of it, or move it back to active.</p>{table}", "Archive")
+
+
 def jobs_list(jobs, opts, tabs, back):
     """Active jobs. jobs: dicts with id, ro, customer, vehicle, insurance, needs_review, stage_id, tech_id,
     est_id, since; tabs: (label, url, count, on)."""
@@ -158,8 +178,14 @@ def job_page(j, versions, log, opts, history):
         f"<td>{f'<a href=\"/files/{v['file_id']}\">PDF</a>' if v['file_id'] else ''}</td></tr>" for v in versions)
     lrows = "".join(
         f"<tr><td>{_dt(a['at'])}</td><td>{escape(a['who'])}</td><td>{escape(a['what'])}</td></tr>" for a in log)
-    body = (f"<p><a href='/jobs'>&larr; Active jobs</a></p><h1>{escape(j['customer']) or 'Job'} "
-            f"<span class='sec'>{escape(j['vehicle'])}</span></h1><div class='card'>{ro}</div>{prod}{stage_hist}"
+    archived = j["archived_at"] is not None
+    status = (f"<div class='note row'>Archived {_dt(j['archived_at'])} - this job is not on the active list."
+              f"{archive_btn(j['id'], True, f'/jobs/{j['id']}')}</div>") if archived else ""
+    top = f"<div class='card row' style='justify-content:space-between'>{ro}" + (
+        "" if archived else archive_btn(j["id"], False, "/jobs")) + "</div>"
+    back = "<a href='/archive'>&larr; Archive</a>" if archived else "<a href='/jobs'>&larr; Active jobs</a>"
+    body = (f"<p>{back}</p><h1>{escape(j['customer']) or 'Job'} "
+            f"<span class='sec'>{escape(j['vehicle'])}</span></h1>{status}{top}{prod}{stage_hist}"
             f"<h2>Job</h2><div class='card'><div class='grid'>{info}</div></div>"
             "<h2>Estimate versions</h2><div class='wrap'><table><thead><tr><th>Document</th><th>Printed</th>"
             f"<th class='n'>Supplement amount</th><th>Uploaded</th><th></th></tr></thead><tbody>{vrows}</tbody></table></div>"
