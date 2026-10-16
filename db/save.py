@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 
 from estimate_parser.core import PARSER_VERSION, version_key
 from .models import (AuditLog, Customer, EstimateDocument, EstimateLine, EstimateTotal, File, InsuranceCompany, Job,
-                     Shop, Vehicle, now)
+                     Shop, Vehicle)
 
 # job fields filled from the estimate; a value already on the job (e.g. typed in by hand) is never overwritten
 _JOB_FIELDS = {"ro_number": ("summary", "ro_number"), "claim_no": ("summary", "claim"),
@@ -44,6 +44,12 @@ def _get_or_create(s, model, where, **values):
         s.add(row)
         s.flush()
     return row
+
+
+def _customer(s, shop_id, name, phone="", user_id=None):
+    name = name.strip()
+    return _get_or_create(s, Customer, [Customer.shop_id == shop_id, func.lower(Customer.name) == name.lower()],
+                          shop_id=shop_id, name=name, phone=phone, created_by=user_id) if name else None
 
 
 VIN_MATCH_DAYS = 90  # same car within this many days (by printed date) = same job, unless the claim #s differ
@@ -94,9 +100,7 @@ def save_parse(s, result, pdf_bytes, files_dir, user_id=None):
     m, h, v = result["summary"], result["header"], result["header"]["vehicle"]
     job = find_job(s, shop_id, m["ro_number"], m["claim"], m["vin"], result["document"]["printed_at"])
     if job is None:
-        name = m["customer"].strip()
-        customer = _get_or_create(s, Customer, [Customer.shop_id == shop_id, func.lower(Customer.name) == name.lower()],
-                                  shop_id=shop_id, name=name, phone=h.get("phone", ""), created_by=user_id) if name else None
+        customer = _customer(s, shop_id, m["customer"], h.get("phone", ""), user_id)
         vehicle = Vehicle(shop_id=shop_id, vin=v.get("vin", ""), year=v.get("year", ""), make=v.get("make", ""),
                           model=v.get("model", ""), description=v.get("description", ""), mileage=v.get("mileage", ""),
                           created_by=user_id)
@@ -105,9 +109,8 @@ def save_parse(s, result, pdf_bytes, files_dir, user_id=None):
         insurance = _get_or_create(s, InsuranceCompany, [InsuranceCompany.shop_id == shop_id,
                                                           func.lower(InsuranceCompany.name) == ins.lower()],
                                    shop_id=shop_id, name=ins, created_by=user_id) if ins else None
-        # filed straight into the archive: the app stores completed jobs and their estimates
         job = Job(shop_id=shop_id, customer=customer, vehicle=vehicle, insurance=insurance, created_by=user_id,
-                  archived_at=now(), **{f: result[src].get(key) or "" for f, (src, key) in _JOB_FIELDS.items()})
+                  **{f: result[src].get(key) or "" for f, (src, key) in _JOB_FIELDS.items()})
         s.add(job)
         s.flush()
         audit(s, "jobs", job.id, "create", user_id=user_id, job_id=job.id)
@@ -172,3 +175,9 @@ def _set_current(s, job, user_id):
     ro = next((d.parse["summary"]["ro_number"] for d in by_age if d.parse["summary"]["ro_number"]), "")
     if ro and ro != job.ro_number and not typed_by_hand(s, job, "ro_number"):
         set_field(s, job, "ro_number", ro, user_id, job.id)
+    # the customer (vehicle owner) follows the newest version too, e.g. after a re-read corrects who the owner is
+    name = by_age[0].parse["summary"]["customer"].strip()
+    if name and (not job.customer or job.customer.name.lower() != name.lower()):
+        set_field(s, job, "customer_id", _customer(s, job.shop_id, name, by_age[0].parse["header"].get("phone", ""), user_id).id,
+                  user_id, job.id)
+        s.refresh(job, ["customer"])

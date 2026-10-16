@@ -3,7 +3,7 @@
 **Status:** core tables are built (`db/models.py`). Tables for the later features are still on paper. Until
 Alembic migrations are added (before moving to PostgreSQL), missing tables are created at startup by `init_db()`.
 
-Goal: one database that holds every job from the first estimate until it is archived, and that the future web app
+Goal: one database that holds every job from the first estimate until it is closed, and that the future web app
 (admin page + live production page) can grow on **without rebuilding what already exists**. Features that come later
 (production board, who worked on the car, customer communication, parts receiving) only **add** tables; the core
 tables built first never change shape.
@@ -19,7 +19,7 @@ tables built first never change shape.
 ## Rules every table follows
 1. Every row has `id`, `created_at`, `created_by`, `updated_at`, `updated_by`.
 2. **Nothing important is overwritten or deleted.** A supplement is a new document, a stage move is a new row, a
-   finished job gets `archived_at` instead of being deleted.
+   closed job gets `closed_at` instead of being deleted.
 3. **Current state + history.** Live screens read one "current" field (`jobs.current_stage_id`) so they are fast;
    every change also writes a history row (`job_stage_events`) so the full timeline exists.
 4. **One change log for everything** - `audit_log` (table, row id, field, old value, new value, user, time) is
@@ -49,7 +49,7 @@ tables built first never change shape.
 
 **`jobs`** - `ro_number` (CCC prints it; Mitchell doesn't, so it is **typed in by hand**), customer, vehicle,
 insurance company, `claim_no`, adjuster, estimator, loss date, deductible, `current_document_id`,
-`current_stage_id`, key dates `dropped_off_at`, `promised_at`, `delivered_at`, `archived_at`.
+`current_stage_id`, key dates `dropped_off_at`, `promised_at`, `delivered_at`, `closed_at` (set by a person, see Closing a job).
 
 **`estimate_documents`** - job, file, `format` (CCC ONE | Mitchell), `title_raw`, `stage` (preliminary | estimate |
 to_repair | of_record | unknown), `supplement_no` (0 = original), `printed_at`, `supplement_amount`,
@@ -58,10 +58,10 @@ to_repair | of_record | unknown), `supplement_no` (0 = original), `printed_at`, 
 
 ### How a supplement arrives
 1. Upload a PDF -> `parse_pdf()`.
-2. Find the job (any job - all are archived): RO# first, then claim #, then the same VIN with an estimate printed
+2. Find the job (open or closed): RO# first, then claim #, then the same VIN with an estimate printed
    within 90 days and no conflicting claim # (`find_job()` in `db/save.py`). The first estimate often prints no claim #
    and sometimes a different RO# than the final bill; the same car back months later on a new claim is a new job.
-   None found -> new job, filed straight into the archive (`archived_at` set). The job's RO# follows the newest
+   None found -> new job, Open (`closed_at` empty). The job's RO# follows the newest
    document that prints one, unless a person typed it in.
 3. Add a new `estimate_documents` row with its lines and totals. Nothing older is touched.
 4. `jobs.current_document_id` points at the newest version, chosen by `version_key()` in
@@ -73,7 +73,7 @@ to_repair | of_record | unknown), `supplement_no` (0 = original), `printed_at`, 
 
 ### Live production board (on hold)
 A first version was built (commit 44a75d4: stages Blueprint / Body Work / Paint / Reassembly / Detail, one current tech
-and estimator per job, stage history, Settings page) and then **removed** so the app could focus on the job archive.
+and estimator per job, stage history, Settings page) and then **removed** so the app could focus on the job list.
 It can be brought back from git history. Tables it used:
 - `production_stages` - name, display order, active.
 - `job_stage_events` - job, from stage, to stage, moved by, moved at, note. Moving a job = new event row + update
@@ -82,17 +82,20 @@ It can be brought back from git history. Tables it used:
 - `time_entries` (optional, later) - employee clocks hours on a job: actual vs estimated hours from
   `estimate_lines`.
 
-### Closing a job (planned)
-- Delivered does **not** mean archived. Order: Delivered -> Final bill sent -> All payments received -> Archived.
+### Closing a job
+- **Closed** = every invoice closed out, everything paid, the shop's audits done. Delivered does **not** mean closed.
+  Order: Delivered -> Final bill sent -> All payments received -> Audits done -> Closed.
+- Built: a Close job / Reopen job button on the job page sets or clears `jobs.closed_at` (logged as `close` /
+  `reopen`); the job list has Open / Closed / All tabs. Planned: the checklist below gates the Close button.
 - **Yes/No checklist per job**, confirmed by a person (never set by an uploaded PDF, its name or contents):
-  - `checklist_items` - name, display order, active, `required_to_archive`. Edited on Settings, so new items need
-    no code. Starts with *Final bill sent* and *All payments received*.
+  - `checklist_items` - name, display order, active, `required_to_close`. Edited on Settings, so new items need
+    no code. Starts with *Final bill sent*, *All payments received* and *Audits done*.
   - `job_checks` - job, item, yes/no, set by, set at; every change also in `audit_log`.
 - Payments that arrive after the final bill need their own record (e.g. `payments`: job, payer insurance/customer,
   amount, date, method, recorded by); the estimate's printed "Received from / Balance due" rows are only what was
   printed at the time.
-- Archive sets `jobs.archived_at` (logged as `archive`), only when every required checklist item is Yes; an
-  archived-jobs list can un-archive.
+- Close sets `jobs.closed_at` (logged as `close`), only when every required checklist item is Yes; a closed job
+  can be reopened.
 
 ### Customer communication (front office)
 - `communications` - job, customer, channel (call / text / email / in person), inbound or outbound, summary,
@@ -125,7 +128,7 @@ questions; looked up with `tools/kb_search.py`.
 
 ## Build order
 1. Core tables + save each parsed estimate (built).
-2. Job archive: every upload filed with its job; list with printed hours and dollars, search, date filter (built).
+2. Job list: every upload filed with its job, Open / Closed jobs; list with printed hours and dollars, search, date filter (built).
 3. Bookkeeping export and financial / performance tracking, from `job_numbers()` (next).
 4. Web login + admin page.
 5. Live production page, closing a job, communication log, parts receiving (later).

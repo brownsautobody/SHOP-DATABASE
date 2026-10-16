@@ -2,7 +2,7 @@
 import os
 from pathlib import Path
 
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.orm import sessionmaker
 
 from .models import Base, Shop
@@ -26,6 +26,9 @@ def make_engine(url=DATABASE_URL):
 def init_db(engine):
     """Create any missing tables and the one shop row. Returns a session factory."""
     Base.metadata.create_all(engine)
+    if "archived_at" in {c["name"] for c in inspect(engine).get_columns("jobs")}:  # older databases
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE jobs RENAME COLUMN archived_at TO closed_at"))
     Session = sessionmaker(engine, expire_on_commit=False)
     with Session() as s:
         if s.scalar(select(Shop.id).limit(1)) is None:

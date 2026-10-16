@@ -161,6 +161,8 @@ def parse_items(pages):
                 if cont and all(w["x0"] >= cols["oper_x0"] - 3 for w in r["words"] if w["x0"] < cols["text_end"]):
                     if text.startswith("Note:"):
                         items[-1]["notes"].append(text)
+                    elif items[-1]["notes"]:  # a note's second line
+                        items[-1]["notes"][-1] += " " + text
                     else:
                         items[-1]["desc"] = (items[-1]["desc"] + " " + " ".join(cont)).strip()
     return items, subtotals
@@ -285,15 +287,16 @@ def parse_header(pages):
         h["phone"] = ""
     else:
         m = re.search(r"Insured:[ 	]*(.*?)\s+Policy #:", text)
-        h["customer"] = m.group(1).strip() if m else ""
+        h["insured"] = m.group(1).strip() if m else ""
+        cols = _band_values(rows, ["Owner:", "Inspection", "Insurance"], take=1)
+        # the customer is the vehicle's owner; on a liability claim the insured is the other driver
+        h["customer"] = cols.get("Owner:", "").strip() or h["insured"]
         m = re.search(r"Written By:[ \t]*(.+)", text)
         h["estimator"] = m.group(1).strip() if m else ""
         m = re.search(r"Adjuster:[ \t]*(.+)", text)
         h["adjuster"] = m.group(1).strip() if m else ""
         m = re.search(r"Claim #:[ \t]*(\S+)", text)
         h["claim"] = m.group(1) if m else ""
-        m = re.search(r"Insurance Company:\s*\n?.*?\n(.*)", text)
-        cols = _band_values(rows, ["Owner:", "Inspection", "Insurance"], take=1)
         h["insurance"] = cols.get("Insurance", "").title()
         m = re.search(r"Date of Loss:[ \t]*(\S+)", text)
         h["loss_date"] = m.group(1) if m else ""

@@ -32,7 +32,7 @@ table.jobs td{vertical-align:middle}.tabs{display:flex;gap:6px;flex-wrap:wrap;ma
 .tabs a span{color:var(--mute);font-size:12px}.tabs a.on{background:var(--accent);border-color:var(--accent);color:#fff}
 .tabs a.on span{color:#fff}.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0}
 .two{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:0 22px}
-.grid form.ro input{width:110px}tfoot th{background:var(--bg);color:var(--ink);font-size:13px}
+.grid form.ro input{width:110px}.done{background:var(--ok);color:#fff}.open{border:1px solid var(--line)}tfoot th{background:var(--bg);color:var(--ink);font-size:13px}
 """
 
 
@@ -83,11 +83,13 @@ LIST_COLUMNS = [("body_hours", "Body", 1), ("refinish_hours", "Refinish", 1), ("
 
 
 def jobs_list(jobs, totals, f, periods):
-    """jobs: dicts id, ro, customer, vehicle, insurance, claim, date (estimate printed), needs_review, numbers;
-    totals: summed numbers; f: current filters q, start, end; periods: quick date ranges (label, start, end)."""
+    """jobs: dicts id, ro, customer, vehicle, insurance, claim, date (estimate printed), needs_review, closed, numbers;
+    totals: summed numbers; f: current filters q, start, end, status (open | closed | all);
+    periods: quick date ranges (label, start, end)."""
     rows = "".join(
         f"<tr><td><a href='/jobs/{j['id']}'>{escape(j['ro']) or '&mdash;'}</a>"
-        f"{' <span class=\"chip flag\">Needs review</span>' if j['needs_review'] else ''}</td>"
+        f"{' <span class=\"chip flag\">Needs review</span>' if j['needs_review'] else ''}"
+        f"{' <span class=\"chip done\">Closed</span>' if j['closed'] else ''}</td>"
         f"<td>{escape(j['customer'])}</td><td>{escape(j['vehicle'])}</td><td>{escape(j['insurance'])}</td>"
         f"<td>{_d(j['date'])}</td>"
         + "".join(f"<td class='n'>{_n(j['numbers'][k], d)}</td>" for k, _, d in LIST_COLUMNS) + "</tr>" for j in jobs)
@@ -97,18 +99,23 @@ def jobs_list(jobs, totals, f, periods):
             + "".join(f"<th class='n'>{label}</th>" for _, label, _ in LIST_COLUMNS) + "</tr>")
     table = (f"<div class='wrap'><table class='jobs'><thead>{head}</thead><tbody>{rows}</tbody><tfoot>{foot}</tfoot>"
              "</table></div>") if jobs else "<p class='sub'>No jobs match.</p>"
+    st = f"&status={f['status']}"
+    status = "".join(f"<a class='tab{' on' if f['status'] == v else ''}' "
+                     f"href='/jobs?status={v}&start={f['start']}&end={f['end']}&q={quote(f["q"])}'>{label}</a>"
+                     for v, label in (("open", "Open"), ("closed", "Closed"), ("all", "All jobs")))
     quick = "".join(f"<a class='tab{' on' if (f['start'], f['end']) == (s, e) else ''}' "
-                    f"href='/jobs?start={s}&end={e}&q={quote(f["q"])}'>{escape(label)}</a>" for label, s, e in periods)
-    quick += f"<a class='tab{' on' if not (f['start'] or f['end']) else ''}' href='/jobs?q={quote(f["q"])}'>All dates</a>"
+                    f"href='/jobs?start={s}&end={e}&q={quote(f["q"])}{st}'>{escape(label)}</a>" for label, s, e in periods)
+    quick += f"<a class='tab{' on' if not (f['start'] or f['end']) else ''}' href='/jobs?q={quote(f["q"])}{st}'>All dates</a>"
     form = ("<form method='get' action='/jobs' class='row' style='margin:0 0 10px'>"
             f"<input class='txt' name='q' value='{escape(f['q'])}' placeholder='RO #, customer, VIN, claim # or insurance' "
             "aria-label='Search' style='flex:1;min-width:220px'>"
             f"<label class='sec'>From <input class='txt' type='date' name='start' value='{f['start']}'></label>"
             f"<label class='sec'>To <input class='txt' type='date' name='end' value='{f['end']}'></label>"
-            "<button class='small'>Show</button></form>")
-    return page("<h1>Jobs</h1><p class='sub'>Every uploaded estimate is filed here with its job. Hours and dollars are "
+            f"<input type='hidden' name='status' value='{f['status']}'><button class='small'>Show</button></form>")
+    return page("<h1>Jobs</h1><p class='sub'>Every uploaded estimate is filed here with its job. A job is Closed once "
+                "every invoice is closed out, everything is paid and the shop's audits are done. Hours and dollars are "
                 "as printed on each job's current estimate; dates are the date that estimate was printed.</p>"
-                f"{form}<div class='tabs'>{quick}</div>{table}", "Jobs")
+                f"{form}<div class='tabs'>{status}</div><div class='tabs'>{quick}</div>{table}", "Jobs")
 
 
 def _d(v):
@@ -123,7 +130,7 @@ def _d(v):
 # One page per job. It is a list of sections; each takes the same context dict and returns HTML (or "" to skip).
 # A new feature adds one function to JOB_SECTIONS - nothing else on the page changes.
 #
-# ctx: job (dict), versions (list of dicts: id, display, name, printed, amount, needs_review, uploaded, file_id, uploaded_as),
+# ctx: job (dict, closed = when it was closed or None), versions (list of dicts: id, display, name, printed, amount, needs_review, uploaded, file_id, uploaded_as),
 #      shown (the version dict being shown), summary (that version's parse summary), note (shown once after an upload)
 
 LABOR_LABEL = {"Body labor": "Body", "Paint labor": "Refinish", "Mechanical labor": "Mechanical", "Other labor": "Other"}
@@ -203,7 +210,18 @@ def _job_documents(ctx):
             f"<th>Printed</th><th class='n'>Supplement amount</th><th>Uploaded</th></tr></thead><tbody>{rows}</tbody></table></div>")
 
 
-JOB_SECTIONS = [_job_header, _job_versions, _job_review, _job_numbers, _job_details, _job_documents]
+def _job_status(ctx):
+    """Open until a person closes the job: every invoice closed out, everything paid, the shop's audits done."""
+    j = ctx["job"]
+    if j["closed"]:
+        return (f"<form class='row note' method='post' action='/jobs/{j['id']}/reopen'><span class='chip done'>Closed</span>"
+                f"<span class='sec'>{_dt(j['closed'])}</span><button class='plain'>Reopen job</button></form>")
+    return (f"<form class='row note' method='post' action='/jobs/{j['id']}/close'><span class='chip open'>Open</span>"
+            "<span class='sec'>Close only when every invoice is closed out, everything is paid and the shop's audits "
+            "are done.</span><button class='small'>Close job</button></form>")
+
+
+JOB_SECTIONS = [_job_header, _job_status, _job_versions, _job_review, _job_numbers, _job_details, _job_documents]
 
 
 def job_page(ctx):

@@ -19,7 +19,7 @@ Centralize all job data — estimates, labor, parts, status, documents (invoices
 Feed downstream tools that shop staff use daily:
 Parts receiving document (updates inventory, links to jobs)
 Production/shop board (shows job status in real-time)
-Job tracking/archival (completed and archived jobs)
+Job tracking (open and closed jobs)
 Customer communications and invoicing
 Enable data-driven decisions — job profitability, turnaround time, parts costs, etc.
 Phase 1: PDF Extraction & Data Display (THIS SPRINT)
@@ -73,19 +73,23 @@ Part, Body / Paint / Mechanical (and Structural, Frame...) Labor, Sublet or Othe
 the estimate's own totals (labor hours by type, parts/charges total, supplement history). If a check fails or the
 document type / print time can't be read, the page shows a red "Needs review" box listing why.
 
-## Phase 2 status: job archive built
+## Phase 2 status: job list built (open and closed jobs)
 
-The app's job for now: **a clean, organized archive of completed jobs and their estimate documents**, the base for
+The app's job for now: **a clean, organized record of every job and its estimate documents**, the base for
 tracking financials and performance and for bookkeeping exports later.
 
-Every uploaded estimate is filed straight into the archive with its job. It is matched to an existing job by RO #,
+A job is **Open** until a person closes it. **Closed** means every invoice is closed out, everything is paid and the
+shop's audits are done - an uploaded PDF never closes a job. The job page has a Close job / Reopen job button
+(each change is logged).
+
+Every uploaded estimate is filed with its job. It is matched to an existing job by RO #,
 then claim #, then the same VIN within 90 days (the first estimate often has no claim # and sometimes a different
 RO# than the final bill; the same car back months later is a new job). The job's RO# follows its newest document; a supplement becomes a new version of the same job
 and the newest version becomes the job's current estimate. Uploading the same PDF twice keeps one copy.
 
 Pages:
 - **Upload estimate**
-- **Jobs** - every job with its current estimate's printed numbers: body / refinish / mechanical / total hours, labor $,
+- **Jobs** - Open / Closed / All jobs, each with its current estimate's printed numbers: body / refinish / mechanical / total hours, labor $,
   parts $, tax $, grand total, plus a totals row. Search by RO #, customer, VIN, claim # or insurance; filter by the
   estimate's printed date (date range, or This month / Last month / This year).
 - Every stored document is named **LAST-RO-TYPE.pdf** (e.g. `BOATMAN-4403-PRELIM-SUPPLEMENT-1.pdf`; no RO # yet:
@@ -126,11 +130,12 @@ Put test PDFs in `samples/` (ignored by git so customer data stays local).
 - `estimate_parser/render.py` - HTML pages
 - `db/models.py` - database tables; `db/save.py` - `save_parse()` and change logging; `db/session.py` - connection
 - `tools/load_samples.py` - save every PDF in `samples/` into the database (for a test copy);
-  `tools/archive_open_jobs.py` - one-time: file jobs saved before uploads went straight to the archive
+  `tools/reopen_jobs.py` - one-time: reopen every job (uploads used to mark jobs finished automatically)
+- `tools/reparse_documents.py` - re-read saved estimates from their PDFs after the parser changes (`--all` for every one)
 - `kb/ccc_help.py` - copies CCC's public help center (cccis.zendesk.com, through its public Help Center API) into the
   knowledge base; `tools/sync_ccc_kb.py` runs it. The knowledge base has no screen in the app - it is reference for
   reading estimates correctly (labor hours, totals) and for technical questions: `tools/kb_search.py labor hours`,
   `--show <id>` for one article, `--tree` for the whole tree
 - `app.py` - the web app
-- `docs/data-model.md` - database design for the web app (jobs, estimates, archive, later: production board, customer
+- `docs/data-model.md` - database design for the web app (jobs, estimates, closing jobs, later: production board, customer
   communication, parts receiving) and the order to build it in

@@ -85,7 +85,8 @@ class Job(Tracked, Base):
     dropped_off_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     promised_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # set by a person once every invoice is closed out, everything is paid and the shop's audits are done
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     customer: Mapped[Customer | None] = relationship()
     vehicle: Mapped[Vehicle | None] = relationship()
@@ -225,7 +226,7 @@ class AuditLog(Base):
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     table_name: Mapped[str] = mapped_column(String(60))
     row_id: Mapped[int] = mapped_column(Integer)
-    action: Mapped[str] = mapped_column(String(20))  # create, update, archive
+    action: Mapped[str] = mapped_column(String(20))  # create, update, manual, close, reopen
     field: Mapped[str] = mapped_column(String(60), default="")
     old_value: Mapped[str | None] = mapped_column(Text)
     new_value: Mapped[str | None] = mapped_column(Text)

@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from flask import Flask, abort, redirect, request, send_file
 from sqlalchemy import select
 
-from db.models import EstimateDocument, File, Job
+from db.models import EstimateDocument, File, Job, now
 from db.save import save_parse, set_field
 from db.session import DATA_DIR, init_db, make_engine
 from estimate_parser.core import NUMBER_FIELDS, doc_file_name, doc_type_name, job_numbers, parse_pdf, version_key
@@ -62,11 +62,16 @@ def _periods(today):
 
 @app.route("/jobs")
 def jobs():
-    f = {k: request.args.get(k, "").strip() for k in ("q", "start", "end")}
+    f = {k: request.args.get(k, "").strip() for k in ("q", "start", "end", "status")}
+    if f["status"] not in ("open", "closed", "all"):
+        f["status"] = "open"
     q = f["q"].lower()
+    jobs = select(Job)
+    if f["status"] != "all":
+        jobs = jobs.where(Job.closed_at.is_(None) if f["status"] == "open" else Job.closed_at.is_not(None))
     rows = []
     with Session() as s:
-        for j in s.scalars(select(Job).where(Job.archived_at.is_not(None))):
+        for j in s.scalars(jobs):
             d = j.current_document
             printed = (d.printed_at if d else "")[:10]  # the date the job's current estimate was printed
             if (f["start"] and printed < f["start"]) or (f["end"] and printed > f["end"]):
@@ -74,7 +79,7 @@ def jobs():
             row = {"id": j.id, "ro": j.ro_number, "customer": j.customer.name if j.customer else "", "vehicle": _vehicle(j),
                    "insurance": j.insurance.name if j.insurance else "", "claim": j.claim_no,
                    "vin": j.vehicle.vin if j.vehicle else "", "date": printed,
-                   "needs_review": bool(d and d.needs_review),
+                   "needs_review": bool(d and d.needs_review), "closed": j.closed_at,
                    "numbers": job_numbers(d.parse) if d else dict.fromkeys(NUMBER_FIELDS)}
             if q and not any(q in str(row[k]).lower() for k in ("ro", "customer", "vin", "claim", "insurance")):
                 continue
@@ -84,9 +89,10 @@ def jobs():
     return jobs_list(rows, totals, f, _periods(date.today()))
 
 
-@app.route("/archive")
-def archive():
-    return redirect("/jobs")
+@app.route("/closed")
+@app.route("/archive")  # old link
+def closed():
+    return redirect("/jobs?status=closed")
 
 
 @app.route("/jobs/<int:job_id>")
@@ -96,7 +102,7 @@ def job(job_id):
         info = {"id": j.id, "ro": j.ro_number, "customer": j.customer.name if j.customer else "", "vehicle": _vehicle(j),
                 "vin": j.vehicle.vin if j.vehicle else "", "insurance": j.insurance.name if j.insurance else "",
                 "claim": j.claim_no, "adjuster": j.adjuster, "estimator": j.estimator, "deductible": j.deductible,
-                "loss_date": j.loss_date, "current_id": j.current_document_id}
+                "loss_date": j.loss_date, "current_id": j.current_document_id, "closed": j.closed_at}
         docs = sorted(j.documents, key=lambda d: version_key(
             {"supplement_no": d.supplement_no, "stage": d.stage, "printed_at": d.printed_at}))
         names = doc_names(j)
@@ -117,6 +123,26 @@ def set_ro(job_id):
     with Session() as s:
         j = s.get(Job, job_id) or abort(404)
         set_field(s, j, "ro_number", request.form.get("ro", "").strip(), job_id=j.id, action="manual")
+        s.commit()
+    return redirect(f"/jobs/{job_id}")
+
+
+@app.route("/jobs/<int:job_id>/close", methods=["POST"])
+def close_job(job_id):
+    """A person closes a job once every invoice is closed out, everything is paid and the shop's audits are done."""
+    with Session() as s:
+        j = s.get(Job, job_id) or abort(404)
+        if j.closed_at is None:
+            set_field(s, j, "closed_at", now(), job_id=j.id, action="close")
+            s.commit()
+    return redirect(f"/jobs/{job_id}")
+
+
+@app.route("/jobs/<int:job_id>/reopen", methods=["POST"])
+def reopen_job(job_id):
+    with Session() as s:
+        j = s.get(Job, job_id) or abort(404)
+        set_field(s, j, "closed_at", None, job_id=j.id, action="reopen")
         s.commit()
     return redirect(f"/jobs/{job_id}")
 
