@@ -5,12 +5,11 @@ PDFs: samples/ and, when present, the 2026 test set's stored files (data/test202
 they and the snapshots stay out of git. Accept new or changed snapshots:   pytest --update-snapshots"""
 import hashlib
 import json
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
-from estimate_parser.core import parse_pdf
+from estimate_parser.core import jsonable, parse_pdf
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCES = [ROOT / "samples", ROOT / "data" / "test2026" / "files"]
@@ -24,11 +23,6 @@ def _pdfs():
         for p in sorted(folder.glob("**/*.pdf"), key=lambda p: str(p).lower()) if folder.exists() else []:
             seen.setdefault(hashlib.sha256(p.read_bytes()).hexdigest(), p)
     return sorted(((p, sha) for sha, p in seen.items()), key=lambda x: str(x[0]).lower())
-
-
-def jsonable(result):
-    """The parse as JSON would store it (Decimal -> number)."""
-    return json.loads(json.dumps(result, default=lambda o: float(o) if isinstance(o, Decimal) else str(o)))
 
 
 def diff(old, new, path=""):

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
-from estimate_parser.core import PARSER_VERSION, version_key
+from estimate_parser.core import PARSER_VERSION, jsonable, version_key
 from .models import (AuditLog, Customer, EstimateDocument, EstimateLine, EstimateTotal, File, InsuranceCompany, Job,
                      Shop, Vehicle)
 
@@ -124,7 +124,7 @@ def save_parse(s, result, pdf_bytes, files_dir, user_id=None):
         job_id=job.id, file=_store_file(s, shop_id, pdf_bytes, result["filename"], files_dir), format=result["format"],
         title_raw=d["title_raw"], display=d["display"], stage=d["stage"], supplement_no=d["supplement_no"],
         printed_at=d["printed_at"], supplement_amount=d["supplement_amount"], needs_review=bool(result["review"]),
-        review_reasons=result["review"], parser_version=PARSER_VERSION, parse=result, created_by=user_id,
+        review_reasons=result["review"], parser_version=PARSER_VERSION, parse=jsonable(result), created_by=user_id,
         lines=_lines(result), totals=_totals(result))
     s.add(doc)
     s.flush()
@@ -142,7 +142,7 @@ def reparse_document(s, doc, result, user_id=None):
                          ("needs_review", bool(result["review"])), ("review_reasons", result["review"]),
                          ("parser_version", PARSER_VERSION)):
         set_field(s, doc, field, value, user_id, job_id)
-    doc.parse = result
+    doc.parse = jsonable(result)
     doc.lines = _lines(result)
     doc.totals = _totals(result)
     audit(s, "estimate_documents", doc.id, "reparse", "parse", old_version, PARSER_VERSION, user_id, job_id)

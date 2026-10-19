@@ -1,22 +1,34 @@
 """Format detection and the shared output shape for parsed estimates."""
+import json
 import re
 from datetime import datetime
+from decimal import Decimal
 
 from . import ccc, mitchell
+from .labor import BODY, GROUPS, LABOR_CATEGORIES, PAINT, is_labor
 from .pdfutil import open_pages, page_text
 
-PARSER_VERSION = "2026.10.14"  # saved with each document; bump when parsing changes so old saves can be re-read
+PARSER_VERSION = "2026.10.19"  # saved with each document; bump when parsing changes so old saves can be re-read
 PRICED = {"Part", "Other Charge", "Sublet"}
-LABOR_CATEGORIES = ["Body Labor", "Paint Labor", "Mechanical Labor", "Structural Labor",
-                    "Frame Labor", "Electrical Labor", "Diagnostic Labor", "Glass Labor"]
+
+
+def D(v):
+    """A number as Decimal: parser values already are; numbers read back from stored JSON go through their text."""
+    return None if v is None else v if isinstance(v, Decimal) else Decimal(str(v))
+
+
+def jsonable(result):
+    """A parse as JSON can store it (Decimal -> number). Every sum is done before this, in Decimal."""
+    return json.loads(json.dumps(result, default=lambda o: float(o) if isinstance(o, Decimal) else str(o)))
 
 
 def detect_format(pages):
+    """CCC's own labels first: 'Mitchell' alone can be a customer's name or a street on a CCC estimate."""
     text = "\n".join(page_text(p) for p in pages[:2])
-    if "Mitchell" in text:
-        return "Mitchell"
     if "CCC ONE" in text or "Workfile ID" in text or "RO Number" in text:
         return "CCC ONE"
+    if re.search(r"Mitchell (Cloud Estimating|International)", text):
+        return "Mitchell"
     raise ValueError("Unrecognized estimate format (expected CCC ONE or Mitchell).")
 
 
@@ -98,7 +110,7 @@ def document_info(fmt, header, page1_text, all_text):
         m = re.search(r"(\d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d\d:\d\d [AP]M)", all_text)
         doc["printed_at"] = _parse_dt(m.group(1), ["%m/%d/%Y %I:%M:%S %p"]) if m else ""
         m = re.search(r"NET COST OF SUPPLEMENT\s+(-?)([\d,]+\.\d\d)", all_text)
-    doc["supplement_amount"] = (-1 if m.group(1) else 1) * float(m.group(2).replace(",", "")) if m else None
+    doc["supplement_amount"] = (-1 if m.group(1) else 1) * Decimal(m.group(2).replace(",", "")) if m else None
     return doc
 
 
@@ -110,9 +122,9 @@ def _history_check(h, totals=()):
     h["sum"] = parts
     if not h["total"]:
         printed = [t for t in totals if t["label"] in ("Grand Total", "Net Total") and t["hours"] is None]
-        match = next((t for t in printed if abs(t["amount"] - parts) <= 0.02), None) or (printed[0] if printed else None)
+        match = next((t for t in printed if abs(t["amount"] - parts) <= CENT * 2), None) or (printed[0] if printed else None)
         h["total"] = {"label": match["label"], "amount": match["amount"]} if match else None
-    h["ok"] = bool(h["total"]) and abs(parts - h["total"]["amount"]) <= 0.02
+    h["ok"] = bool(h["total"]) and abs(parts - h["total"]["amount"]) <= CENT * 2
     return h
 
 
@@ -126,7 +138,10 @@ def version_key(doc):
     return (doc["supplement_no"], STAGE_RANK[doc["stage"]], doc["printed_at"] or "")
 
 
-def _close(a, b, tol=0.06):
+CENT = Decimal("0.01")
+
+
+def _close(a, b, tol=Decimal("0.06")):
     return abs(a - b) <= tol
 
 
@@ -140,26 +155,26 @@ def _checks(fmt, charges, totals, subtotals):
     def hours(cat):
         return round(sum(c["hours"] for c in charges if c["category"] == cat and c["hours"] is not None), 2)
 
-    # CCC folds any labor type without its own totals row into Body Labor
-    body_like = ["Body Labor"] + [c for c in LABOR_CATEGORIES[2:] if c not in by_label]
+    # CCC folds any labor type without its own totals row into Body Labor (glass, structural, a type the shop made up)
+    body_like = [BODY] + sorted({c["category"] for c in charges if is_labor(c["category"])} - {BODY, PAINT} - set(by_label))
     if fmt != "CCC ONE":
-        body_like = ["Body Labor"]
+        body_like = [BODY]
     for label, cats in (("Body Labor", body_like), ("Paint Labor", ["Paint Labor"]), ("Mechanical Labor", ["Mechanical Labor"])):
         exp = by_label.get(label, {}).get("hours")
         if exp is None:
             continue
         got = round(sum(hours(c) for c in cats), 2)
-        checks.append({"name": f"{label} hours", "parsed": got, "expected": exp, "ok": _close(got, exp, 0.01)})
+        checks.append({"name": f"{label} hours", "parsed": got, "expected": exp, "ok": _close(got, exp, CENT)})
 
     # total hours: every labor line of any type vs the estimate's own total. Mitchell prints a Total Labor row; CCC
     # prints one row per labor type (Paint Supplies hours are materials, not labor - they can differ by the clear-coat cap)
-    rows = [t for t in totals if t["hours"] is not None and t["label"].endswith(" Labor") and t["label"] != "Total Labor"]
+    rows = [t for t in totals if t["hours"] is not None and is_labor(t["label"])]
     exp = by_label.get("Total Labor", {}).get("hours")
     if exp is None and rows:
         exp = round(sum(t["hours"] for t in rows), 2)
     if exp is not None:
-        got = round(sum(c["hours"] for c in charges if c["hours"] is not None and c["category"].endswith(" Labor")), 2)
-        checks.append({"name": "Total labor hours", "parsed": got, "expected": exp, "ok": _close(got, exp, 0.01)})
+        got = round(sum(c["hours"] for c in charges if c["hours"] is not None and is_labor(c["category"])), 2)
+        checks.append({"name": "Total labor hours", "parsed": got, "expected": exp, "ok": _close(got, exp, CENT)})
 
     price_total = round(sum(c["amount"] for c in charges if c["category"] in PRICED and c["amount"] is not None), 2)
     if fmt == "CCC ONE":
@@ -277,22 +292,24 @@ NUMBER_FIELDS = ["body_hours", "refinish_hours", "mechanical_hours", "other_hour
 
 def job_numbers(r):
     """The money and hours a job is tracked by, all as printed on the estimate (None when it doesn't print one).
-    The one place lists, totals and exports read from - add a field here and every report can use it."""
+    The one place lists, totals and exports read from - add a field here and every report can use it.
+    Hours by type are the estimate's printed labor totals rows (see summarize()). Works on a fresh parse or one read
+    back from the database (numbers as JSON): every value is returned, and every sum done, as Decimal."""
     s = r["summary"]
-    hours = {x["category"]: x["hours"] for x in s["labor"]}
+    hours = {x["category"]: D(x["hours"]) for x in s["labor"]}
     by = {}
     for t in r["totals"]:
         by.setdefault(t["label"], t)
     grand = (by.get("Grand Total") or by.get("Gross Total") or {}).get("amount")
     if r["format"] == "Mitchell":  # one 'Tax' row for the whole estimate (the others are per section)
-        tax = by.get("Tax", {}).get("amount")
+        tax = D(by.get("Tax", {}).get("amount"))
     else:  # CCC prints each tax on its own row (sales, county, municipal...)
-        taxes = [t["amount"] for t in r["totals"] if "Tax" in t["label"] and t["hours"] is None]
-        tax = round(sum(taxes), 2) if taxes else None
+        taxes = [D(t["amount"]) for t in r["totals"] if "Tax" in t["label"] and t["hours"] is None]
+        tax = sum(taxes) if taxes else None
     return {"body_hours": hours.get("Body labor"), "refinish_hours": hours.get("Paint labor"),
             "mechanical_hours": hours.get("Mechanical labor"), "other_hours": hours.get("Other labor"),
-            "total_hours": s["total_labor_hours"], "labor_amount": s["total_labor_amount"], "parts": s["parts_total"],
-            "tax": tax, "grand_total": grand}
+            "total_hours": D(s["total_labor_hours"]), "labor_amount": D(s["total_labor_amount"]),
+            "parts": D(s["parts_total"]), "tax": tax, "grand_total": D(grand)}
 
 
 def summarize(r):
@@ -302,19 +319,23 @@ def summarize(r):
     ro = h.get("ro_number", "")
     rates = {t["label"]: t["rate"] for t in totals if t.get("rate")}
 
-    groups = {"Body": ["Body Labor"], "Paint": ["Paint Labor"], "Mechanical": ["Mechanical Labor"]}
+    # hours and dollars by type come from the estimate's printed labor totals rows (CCC folds labor types without a
+    # row of their own into Body); only an estimate that prints no labor rows at all falls back to its lines
+    printed = [t for t in totals if t["hours"] is not None and is_labor(t["label"])]
+    groups = dict(GROUPS)
     # every other labor type - including ones the shop made up in CCC - so total hours never drop a line
-    seen = {c["category"] for c in charges if c["hours"] is not None and c["category"].endswith(" Labor")}
-    groups["Other"] = sorted((set(LABOR_CATEGORIES) | seen) - set(sum(groups.values(), [])))
+    seen = {c["category"] for c in charges if c["hours"] is not None and is_labor(c["category"])}
+    groups["Other labor"] = sorted((set(LABOR_CATEGORIES) | seen | {t["label"] for t in printed}) - set(sum(GROUPS.values(), [])))
     labor = []
     for name, cats in groups.items():
         rows = [c for c in charges if c["category"] in cats and c["hours"] is not None]
-        hrs = round(sum(c["hours"] for c in rows), 2)
+        rows_printed = [t for t in printed if t["label"] in cats]
+        hrs = sum((t["hours"] for t in (rows_printed if printed else rows)), Decimal(0))
         rate = next((c["rate"] for c in rows if c.get("rate")), None) or next((rates[c] for c in cats if c in rates), None)
-        # dollars come from the estimate's printed labor totals rows, never hours x rate
-        printed = [t["amount"] for t in totals if t["label"] in cats and t["hours"] is not None and t["amount"] is not None]
-        amt = round(sum(printed), 2) if printed else None
-        labor.append({"category": f"{name} labor", "hours": hrs, "rate": rate, "amount": amt})
+        # dollars never hours x rate
+        amts = [t["amount"] for t in rows_printed if t["amount"] is not None]
+        labor.append({"category": name, "hours": hrs, "rate": rate, "amount": sum(amts) if amts else None})
+    total_row = next((t for t in totals if t["label"] == "Total Labor" and t["hours"] is not None), None)
 
     by = {t["label"]: t["amount"] for t in totals}
     parts = by.get("Parts")
@@ -347,14 +368,14 @@ def summarize(r):
         "document": r["document"],
         "history": r["history"],
         "customer": h.get("customer", ""),
-        "ro_number": ro if ro.isdigit() and len(ro) == 4 else "",
+        "ro_number": ro.strip(),  # as printed (CCC); Mitchell prints none - typed in by hand
         "vehicle": " ".join(x for x in (v.get("year"), v.get("make"), _short_model(v.get("model", ""))) if x),
         "vin": v.get("vin", ""),
         "insurance": h.get("insurance", ""),
         "claim": h.get("claim", ""),
         "labor": labor,
-        "total_labor_hours": round(sum(x["hours"] for x in labor), 2),
-        "total_labor_amount": round(sum(t["amount"] for t in totals if t["hours"] is not None and t["rate"] and t["label"].endswith("Labor")), 2) or None,
+        "total_labor_hours": total_row["hours"] if total_row else sum((x["hours"] for x in labor), Decimal(0)),
+        "total_labor_amount": sum((t["amount"] for t in printed if t["rate"]), Decimal(0)) or None,
         "parts_total": parts,
         "other_charges": dedup,
         "needs_review": bool(r["review"]),

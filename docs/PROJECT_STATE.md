@@ -26,9 +26,13 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
 ## Features (what a user can do today)
 - **Upload estimate** (`/`): CCC ONE or Mitchell, estimate or supplement, max 25 MB. Unparseable PDFs show the reason.
 - **Parsing** - only values the PDF prints, never calculated: customer (vehicle owner, not the insured on liability
-  claims), phone, vehicle (VIN/year/make/model/mileage), insurance, claim #, RO # (CCC only), adjuster, estimator,
-  loss date, deductible; line items split into Part / Body / Paint / Mechanical / Structural / Frame / Electrical /
-  Diagnostic / Glass Labor / Sublet / Other Charge; totals rows; supplement history; document type + print time.
+  claims), phone (CCC; Mitchell only when printed in the Owner column - none of the samples do), vehicle
+  (VIN/year/make/model/mileage), insurance, claim #, RO # as printed (CCC; Mitchell prints none - typed in by hand;
+  Mitchell's Estimate ID is kept as `estimate_id`), adjuster, estimator, loss date, deductible; line items split into
+  Part / Sublet / Other Charge and the labor types in `estimate_parser/labor.py` (Body, Paint, Mechanical, Structural,
+  Frame, Electrical, Diagnostic, Glass, or a type the shop made up) as the estimate prints them; totals rows;
+  supplement history; document type + print time. CCC is recognised by its own labels first ('Mitchell' can be a
+  customer or street name). Amounts are exact `Decimal`s read from the printed text; every sum is in Decimal.
 - **Needs review** flag when: labor hours by type or total don't match printed totals, parts/charges total doesn't
   match, history doesn't add up, document type unknown, or no print date (`review_flags()`).
 - **Job matching** (`find_job()`): RO # -> claim # -> same VIN printed within 90 days with no conflicting claim #.
@@ -37,7 +41,8 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
   (`version_key()`). Job's RO # and customer follow the newest version unless the RO # was typed by hand.
 - **Jobs list** (`/jobs`): Open / Closed / All tabs; columns body / refinish / mech / other / total hours, labor $,
   parts $, tax $, grand total + totals row; search RO #, customer, VIN, claim #, insurance; date filter on estimate
-  print date (range, This month / Last month / This year). Numbers come only from `job_numbers()`.
+  print date (range, This month / Last month / This year). Numbers come only from `job_numbers()`; hours by type are
+  the estimate's printed labor totals rows (lines only when it prints none).
 - **Job page** (`/jobs/<id>`): header, Open/Closed status with Close / Reopen button, a tab per estimate version,
   needs-review reasons, hours and money as printed, job details (RO # editable), documents with PDF links.
 - **Document names**: every stored PDF downloads as `LAST-RO-TYPE.pdf` (e.g. `BOATMAN-4403-PRELIM-SUPPLEMENT-1.pdf`);
@@ -55,7 +60,11 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
     The Step 0 baseline is frozen in `data/snapshots-baseline-step0/` for comparing the whole refactor.
   - `tests/test_matching.py` - which job an upload is filed with, from small hand-made parses (no customer data).
     Rules still to come are marked `xfail(strict=True)`: they must fail until the step that builds them.
+  - `tests/test_parser_rules.py` - parser rules on hand-made inputs (format detection, RO #, labor types, printed
+    hours, exact money, Mitchell owner phone).
   - `tests/test_migrations.py` - the migrations build exactly the tables in `db/models.py`.
+  - `python tests/snapshot_report.py [folder] [--detail]` - which fields changed against the snapshots (or against
+    `data/snapshots-baseline-step0`), grouped by field.
 - **Schema changes are Alembic migrations** in `migrations/versions/` (0001 baseline = schema before Alembic,
   0002 `archived_at` -> `closed_at`). Update a database with `python tools/migrate.py`: it stamps a pre-Alembic
   database, then backs it up to `<data folder>/backups/<name>-YYYYMMDD-HHMM-before-<migration>.db` before each
@@ -71,7 +80,8 @@ POST `/jobs/<id>/ro`, `/jobs/<id>/close`, `/jobs/<id>/reopen` · `/files/<id>` P
 - `estimate_parser/core.py` - `parse_pdf()`, format detection, `classify_document()`, `_checks()`, `review_flags()`,
   `version_key()`, `job_numbers()` + `NUMBER_FIELDS`, `doc_file_name()`, `PARSER_VERSION` (bump when parsing changes)
 - `estimate_parser/ccc.py`, `mitchell.py` - one parser per format (header, items, totals, history)
-- `estimate_parser/pdfutil.py` - PDF rows / number helpers
+- `estimate_parser/labor.py` - the one list of labor types and how each format prints them
+- `estimate_parser/pdfutil.py` - PDF rows / number helpers (`num()`, `dec()` -> Decimal)
 - `estimate_parser/render.py` - all HTML; job page = `JOB_SECTIONS` list (new feature = add a section function)
 - `db/models.py` - tables; `db/save.py` - `save_parse()`, `reparse_document()`, `find_job()`, `set_field()` (logs);
   `db/session.py` - engine, `init_db()` (new database: create + stamp; old schema: refuse); `db/migrate.py` -
@@ -90,7 +100,7 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 - `data/shop.db` - real database: 2 jobs, 2 documents (parser 2026.10.14), knowledge base loaded.
 - `data/test2026/shop.db` - test copy of 54 real 2026 CCC estimates / 41 jobs (all closed - they were filed as
   archived), still on parser 2026.10.13b. Migrated to 0002 on 2026-10-19 (backup in `data/test2026/backups/`).
-- `data/test/` - older sample test copy (migrated to 0002). `samples/` - sample PDFs (12 CCC, 2 Mitchell).
+- `data/test/` - older sample test copy (migrated to 0002). `samples/` - sample PDFs (7 CCC, 7 Mitchell).
 - To use a test copy: `SHOP_DATA_DIR=data\test2026` (Windows `set SHOP_DATA_DIR=data\test2026`; from WSL also
   `WSLENV=SHOP_DATA_DIR`). Stored file paths are Windows paths, so run the tools with the Windows Python.
 
@@ -110,6 +120,8 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 - Old branches `core-database`, `database-design`, `worktree-needs-review-flag` and a prunable worktree remain.
 
 ## Change history (newest first; add one line per commit)
+- 2026-10-19 - Refactor Step 1: parser 2026.10.19 - CCC detected before Mitchell, RO # kept as printed, one labor
+  list (CCC glass = Glass Labor), job hours from printed labor rows, Decimal money, Mitchell owner phone.
 - 2026-10-19 - Refactor Step 0: pytest snapshot + matching + migration tests, Alembic (0001 baseline, 0002 rename),
   `tools/migrate.py` with backups, backup before reparse.
 - 2026-10-16 - Open / Closed jobs: Close / Reopen button, list tabs, `archived_at` -> `closed_at`; customer = vehicle

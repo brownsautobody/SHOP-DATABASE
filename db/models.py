@@ -1,11 +1,12 @@
 """Core tables (see docs/data-model.md). Later features only add tables; these keep their shape."""
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-Money = Numeric(10, 2, asdecimal=False)
-Hours = Numeric(8, 2, asdecimal=False)
+Money = Numeric(10, 2, asdecimal=True)  # exact: Decimal in Python, numeric(10,2) in the database
+Hours = Numeric(8, 2, asdecimal=True)
 
 
 def now():
@@ -120,7 +121,7 @@ class EstimateDocument(Tracked, Base):
     stage: Mapped[str] = mapped_column(String(20))
     supplement_no: Mapped[int] = mapped_column(Integer, default=0)
     printed_at: Mapped[str] = mapped_column(String(19), default="")  # ISO text, as the parser gives it
-    supplement_amount: Mapped[float | None] = mapped_column(Money)
+    supplement_amount: Mapped[Decimal | None] = mapped_column(Money)
     needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
     review_reasons: Mapped[list] = mapped_column(JSON, default=list)
     parser_version: Mapped[str] = mapped_column(String(20))
@@ -144,10 +145,10 @@ class EstimateLine(Base):
     description: Mapped[str] = mapped_column(String(300), default="")
     part_no: Mapped[str] = mapped_column(String(60), default="", index=True)
     part_type: Mapped[str] = mapped_column(String(40), default="")
-    qty: Mapped[float | None] = mapped_column(Hours)
-    hours: Mapped[float | None] = mapped_column(Hours)
-    rate: Mapped[float | None] = mapped_column(Money)
-    amount: Mapped[float | None] = mapped_column(Money)
+    qty: Mapped[Decimal | None] = mapped_column(Hours)
+    hours: Mapped[Decimal | None] = mapped_column(Hours)
+    rate: Mapped[Decimal | None] = mapped_column(Money)
+    amount: Mapped[Decimal | None] = mapped_column(Money)
     taxed: Mapped[bool | None] = mapped_column(Boolean)
     flags: Mapped[str] = mapped_column(String(120), default="")
 
@@ -159,10 +160,10 @@ class EstimateTotal(Base):
     document_id: Mapped[int] = mapped_column(ForeignKey("estimate_documents.id"), index=True)
     label: Mapped[str] = mapped_column(String(120))
     section: Mapped[str] = mapped_column(String(30), default="")
-    hours: Mapped[float | None] = mapped_column(Hours)
-    rate: Mapped[float | None] = mapped_column(Money)
-    amount: Mapped[float | None] = mapped_column(Money)
-    extra: Mapped[float | None] = mapped_column(Money)  # markup / discount column
+    hours: Mapped[Decimal | None] = mapped_column(Hours)
+    rate: Mapped[Decimal | None] = mapped_column(Money)
+    amount: Mapped[Decimal | None] = mapped_column(Money)
+    extra: Mapped[Decimal | None] = mapped_column(Money)  # markup / discount column
     extra_kind: Mapped[str] = mapped_column(String(20), default="")
 
 

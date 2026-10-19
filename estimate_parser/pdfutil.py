@@ -1,5 +1,6 @@
 """Low-level PDF helpers shared by the CCC and Mitchell parsers."""
 import re
+from decimal import Decimal
 
 import pdfplumber
 
@@ -32,13 +33,19 @@ def is_num(tok):
 
 
 def num(tok):
-    """'1,386.25' -> 1386.25, '(0.4)' -> -0.4, '$5.00*' -> 5.0. None if not numeric."""
+    """'1,386.25' -> Decimal('1386.25'), '(0.4)' -> Decimal('-0.4'), '$5.00*' -> Decimal('5.00'). None if not numeric.
+    Straight from the printed text, never through float, so money adds up to the cent."""
     t = tok.strip()
     if not _NUM_RE.match(t):
         return None
     neg = (t.startswith("(") and t.endswith(")")) or "-" in t
-    v = float(re.sub(r"[^\d.]", "", t) or "nan")
+    v = Decimal(re.sub(r"[^\d.]", "", t))
     return -v if neg else v
+
+
+def dec(text):
+    """A number a regex already matched, e.g. '1,234.56' -> Decimal('1234.56')."""
+    return Decimal(text.replace(",", ""))
 
 
 def money(s):

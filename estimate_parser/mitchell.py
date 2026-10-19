@@ -1,13 +1,10 @@
 """Parser for Mitchell Cloud Estimating PDFs."""
 import re
+from decimal import Decimal
 
-from .pdfutil import group_rows, is_num, money, num, page_text
+from .labor import MITCHELL_TYPES, category
+from .pdfutil import dec, group_rows, is_num, money, num, page_text
 
-LABOR_CATS = {
-    "body": "Body Labor", "refinish": "Paint Labor", "mechanical": "Mechanical Labor",
-    "frame": "Frame Labor", "structural": "Structural Labor", "glass": "Glass Labor",
-    "electrical": "Electrical Labor", "diagnostic": "Diagnostic Labor",
-}
 STOP_ROW = re.compile(r"^(Parts Vendors|Recycled Part Vendors|Estimate Totals|Committed On|\*+ Judgment)")
 
 
@@ -148,7 +145,7 @@ def expand(item):
     if not item["op"] and not item["labor_type"] and price is None and not ptype:
         return out  # free-text note line
 
-    if price == 0.0 and units is not None and not is_cost:
+    if price == 0 and units is not None and not is_cost:
         price = None  # labor-only operation that prints a $0.00 price column
     if price is not None:
         if is_cost:
@@ -166,9 +163,9 @@ def expand(item):
         # part whose price is 'INC' (included)
         qty = num(item["qty"]) if item["qty"] and is_num(item["qty"]) else None
         out.append({**base, "category": "Part", "qty": qty, "part_type": ptype, "hours": None, "rate": None,
-                    "amount": 0.0, "taxed": item["taxed"], "note": "price included"})
+                    "amount": Decimal("0"), "taxed": item["taxed"], "note": "price included"})
     if units is not None and not units_inc and item["labor_type"]:
-        cat = LABOR_CATS.get(item["labor_type"].lower().split()[0], f"{item['labor_type']} Labor")
+        cat = MITCHELL_TYPES.get(item["labor_type"].lower().split()[0], category(item["labor_type"]))
         if units != 0 or not out:
             out.append({**base, "category": cat, "qty": None, "part_type": "", "hours": units, "rate": None, "amount": None})
     return out
@@ -190,12 +187,12 @@ def parse_totals(pages):
                 continue
             m = re.match(r"^(?P<l>[A-Za-z ]+Labor)\s+(?P<h>-?[\d.]+)\s*\$(?P<r>[\d,.]+)\s+\$(?P<a>[\d,.]+)$", line)
             if m:
-                rows.append({"label": m["l"].replace("Refinish", "Paint"), "hours": float(m["h"]),
-                             "rate": float(m["r"].replace(",", "")), "amount": money(m["a"])})
+                rows.append({"label": m["l"].replace("Refinish", "Paint"), "hours": dec(m["h"]),
+                             "rate": dec(m["r"]), "amount": money(m["a"])})
                 continue
             m = re.match(r"^(?P<l>Total Labor)\s+(?P<h>[\d.]+)\s+\$(?P<a>[\d,.]+)$", line)
             if m:
-                rows.append({"label": "Total Labor", "hours": float(m["h"]), "rate": None, "amount": money(m["a"])})
+                rows.append({"label": "Total Labor", "hours": dec(m["h"]), "rate": None, "amount": money(m["a"])})
                 continue
             m = re.match(r"^(?P<l>[A-Za-z][A-Za-z '\-]*?)(?: [\d.]+%)?\s+(?P<a>-?\$-?[\d,]+\.\d\d)\*?(?:\s+-?\$-?[\d,]+\.\d\d)?$", line)
             if m and not m["l"].startswith(("Committed", "Copyright")):
@@ -247,7 +244,8 @@ def parse_header(pages):
     text = page_text(pages[0])
     h = {"document": "Mitchell Estimate"}
     m = re.search(r"\b(\d{2}-\d{9}-\d{2})\b", text)
-    h["ro_number"] = m.group(1) if m else ""
+    h["estimate_id"] = m.group(1) if m else ""  # Mitchell's Estimate ID (the claim # on these samples)
+    h["ro_number"] = ""  # Mitchell prints no RO #; the shop types it in
     m = re.search(r"Quote ID\s*\n?(\d+)", text)
     third = "Insured" if any(w["text"] == "Insured" for r in rows for w in r["words"]) else "Claimant"
     o = _band_values(rows, [("owner", "Owner"), ("second", third), ("appraiser", "Appraiser")], take=1)
@@ -262,8 +260,7 @@ def parse_header(pages):
     dm = re.search(r"\d\d/\d\d/\d{4}", dates.get("loss", ""))
     h["loss_date"] = dm.group(0) if dm else ""
     h["created"] = dates.get("reported", "")
-    phones = re.findall(r"\(\d{3}\) \d{3}-\d{4}", text)
-    h["phone"] = ""
+    h["phone"] = _owner_phone(rows, third)
     veh = re.search(r"^((?:19|20)\d\d [A-Z][^\n]+)$", text, re.M)
     v = veh.group(1) if veh else ""
     ym = re.match(r"((?:19|20)\d\d)\s+(\S+)\s+(.*)", v)
@@ -278,10 +275,26 @@ def parse_header(pages):
     return h
 
 
+def _owner_phone(rows, third):
+    """The owner's phone, printed under the owner's name in the Owner column. Often not printed at all: the phone
+    under the Appraiser column is the appraiser's, never the owner's."""
+    for i, r in enumerate(rows):
+        owner = next((w for w in r["words"] if w["text"] == "Owner"), None)
+        nxt = next((w for w in r["words"] if w["text"] == third), None)
+        if owner and nxt:
+            for rr in rows[i + 1:i + 3]:
+                col = " ".join(w["text"] for w in rr["words"] if owner["x0"] - 2 <= w["x0"] < nxt["x0"] - 2)
+                m = re.search(r"\(\d{3}\) \d{3}-\d{4}", col)
+                if m:
+                    return m.group(0)
+            return ""
+    return ""
+
+
 # ---------------------------------------------------------------- history
 
 def _dollars(neg1, neg2, digits):
-    v = float(digits.replace(",", ""))
+    v = dec(digits)
     return -v if (neg1 or neg2) else v
 
 

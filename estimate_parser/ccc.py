@@ -1,7 +1,9 @@
 """Parser for CCC ONE estimates and supplements."""
 import re
+from decimal import Decimal
 
-from .pdfutil import group_rows, is_num, num, page_text
+from .labor import CCC_TYPES, category
+from .pdfutil import dec, group_rows, is_num, num, page_text
 
 OPS = {
     "Repl", "R&I", "Rpr", "O/H", "Blnd", "Refn", "Subl", "Sect", "D&R", "Algn",
@@ -10,11 +12,6 @@ OPS = {
 PART_TYPE_PREFIX = re.compile(
     r"^(Non OEM CAPA|Non OEM NSF|Non OEM|Opt OEM|ALT OEM|OEM|RCY|LKQ|Recond|Reman|A/M|Used)\s+(?=\S)"
 )
-LABOR_TYPES = {
-    "body": "Body", "mech": "Mechanical", "m": "Mechanical", "struc": "Structural", "s": "Structural",
-    "frame": "Frame", "f": "Frame", "diag": "Diagnostic", "d": "Diagnostic", "elec": "Electrical",
-    "e": "Electrical", "glass": "Body", "g": "Body",
-}
 OTHER_SECTIONS = {"MISCELLANEOUS OPERATIONS", "OTHER CHARGES"}
 STOP_ROW = re.compile(r"^(NOTES\b|ESTIMATE TOTALS|Estimate Totals|T = Taxable|SUPPLEMENT SUMMARY|PARTS SUPPLIER LIST)")
 
@@ -93,7 +90,7 @@ def _parse_item(row, cols, line_no, section):
             if col == "price" and t.upper().endswith("T"):
                 item["taxed"] = True
             if col == "labor" and re.search(r"[A-Za-z]$", t):
-                item["labor_type"] = LABOR_TYPES.get(t[-1].lower(), "")
+                item["labor_type"] = CCC_TYPES.get(t[-1].lower(), "")
         elif t.lower().startswith("incl") and abs(w["x1"] - cols["labor_x1"]) < 25:
             item["labor"] = "Incl."
         elif t in ("T", "X"):
@@ -103,7 +100,7 @@ def _parse_item(row, cols, line_no, section):
         elif w["x0"] > cols["price_x1"] - 2 and w["x1"] < cols["labor_x1"] - 22:
             item["part_type"] = (item["part_type"] + " " + t).strip()
         elif w["x0"] >= cols["labor_x1"] - 2 and w["x1"] < cols["paint_x1"] - 15:
-            item["labor_type"] = LABOR_TYPES.get(t.lower(), item["labor_type"] or t)
+            item["labor_type"] = CCC_TYPES.get(t.lower(), item["labor_type"] or t)
 
     m = PART_TYPE_PREFIX.match(item["desc"])
     if m:
@@ -133,7 +130,7 @@ def parse_items(pages):
         for r in rows[start:]:
             text = r["text"]
             if text.startswith("SUBTOTALS"):
-                subtotals = [float(x.replace(",", "")) for x in re.findall(r"-?[\d,]+\.\d+", text)]
+                subtotals = [dec(x) for x in re.findall(r"-?[\d,]+\.\d+", text)]
                 break
             if STOP_ROW.match(text):
                 if text.startswith(("SUPPLEMENT SUMMARY", "PARTS SUPPLIER LIST")):
@@ -168,10 +165,6 @@ def parse_items(pages):
     return items, subtotals
 
 
-def _labor_cat(labor_type):
-    return f"{labor_type or 'Body'} Labor"
-
-
 def expand(item):
     """Turn one estimate line into itemized charge rows (part / labor by type / paint / other)."""
     out = []
@@ -190,14 +183,14 @@ def expand(item):
                     "unit_price": None, "hours": None, "rate": None, "amount": item["price"],
                     "taxed": item["taxed"]})
     labor = item["labor"]
-    if isinstance(labor, float) and labor != 0:
-        out.append({**base, "category": _labor_cat(item["labor_type"]), "qty": None, "part_type": "",
+    if isinstance(labor, Decimal) and labor != 0:
+        out.append({**base, "category": category(item["labor_type"]), "qty": None, "part_type": "",
                     "hours": labor, "rate": None, "amount": None})
     if item["paint"]:
         out.append({**base, "category": "Paint Labor", "qty": None, "part_type": "",
                     "hours": item["paint"], "rate": None, "amount": None})
-    if not out and isinstance(labor, float):
-        out.append({**base, "category": _labor_cat(item["labor_type"]), "qty": None, "part_type": "",
+    if not out and isinstance(labor, Decimal):
+        out.append({**base, "category": category(item["labor_type"]), "qty": None, "part_type": "",
                     "hours": labor, "rate": None, "amount": None})
     return out
 
@@ -208,7 +201,7 @@ _AMT = r"\(?-?[\d,]+\.\d\d\)?"
 
 
 def _amt(s):
-    v = float(re.sub(r"[^\d.]", "", s))
+    v = Decimal(re.sub(r"[^\d.]", "", s))
     return -v if "(" in s or "-" in s else v
 
 
@@ -225,7 +218,7 @@ def parse_totals(pages):
                 continue
             m = re.match(rf"^(?P<l>[A-Za-z ]+?)\s+(?P<h>-?[\d.]+) hrs @ \$ ?(?P<r>[\d,.]+) /hr\s+(?P<a>{_AMT})$", line)
             if m:
-                rows.append({"label": m["l"], "hours": float(m["h"]), "rate": float(m["r"].replace(",", "")), "amount": _amt(m["a"])})
+                rows.append({"label": m["l"], "hours": dec(m["h"]), "rate": dec(m["r"]), "amount": _amt(m["a"])})
                 continue
             m = re.match(rf"^(?P<l>[A-Za-z ]+Tax)\s+\$ ?(?P<b>[\d,.]+) @ (?P<p>[\d.]+) ?%\s+(?P<a>{_AMT})$", line)
             if m:
@@ -234,7 +227,7 @@ def parse_totals(pages):
             m = re.match(rf"^(?P<l>Labor, [A-Za-z]+)\s+(?P<r>[\d,.]+)\s+(?P<h>[\d.]+)\s+(?P<a>{_AMT})$", line)
             if m:
                 lab = m["l"].split(", ")[1].replace("Refinish", "Paint")
-                rows.append({"label": f"{lab} Labor", "hours": float(m["h"]), "rate": float(m["r"].replace(",", "")), "amount": _amt(m["a"])})
+                rows.append({"label": f"{lab} Labor", "hours": dec(m["h"]), "rate": dec(m["r"]), "amount": _amt(m["a"])})
                 continue
             m = re.match(rf"^(?P<l>[A-Za-z][A-Za-z ,./#$:()]*?)\s+(?:(?P<x>{_AMT})\s+)?(?P<a>{_AMT})$", line)
             if m and not m["l"].startswith(("T =", "Page")):
@@ -332,17 +325,17 @@ def parse_history(pages):
     for l in lines[start + 1:]:
         m = re.match(r"^(Estimate|Supplement S\d+)\s+(-?[\d,]+\.\d\d)\s*(.*)$", l)
         if m:
-            entries.append({"label": m.group(1), "by": m.group(3).strip(), "amount": float(m.group(2).replace(",", ""))})
+            entries.append({"label": m.group(1), "by": m.group(3).strip(), "amount": dec(m.group(2))})
             continue
         m = re.match(r"^(Job Total):\s*\$?\s*(-?[\d,]+\.\d\d)$", l)
         if m:
-            total = {"label": m.group(1), "amount": float(m.group(2).replace(",", ""))}
+            total = {"label": m.group(1), "amount": dec(m.group(2))}
             break
     return {"entries": entries, "total": total} if entries else None
 
 
 def _hist_amt(s):
-    v = float(re.sub(r"[^\d.]", "", s))
+    v = Decimal(re.sub(r"[^\d.]", "", s))
     return -v if "(" in s or "-" in s else v
 
 
