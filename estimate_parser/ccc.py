@@ -291,7 +291,7 @@ def parse_header(pages):
         m = re.search(r"Claim #:[ \t]*(\S+)", text)
         h["claim"] = m.group(1) if m else ""
         h["insurance"] = cols.get("Insurance", "").title()
-        m = re.search(r"Date of Loss:[ \t]*(\S+)", text)
+        m = re.search(r"Date of Loss:[ \t]*(\d{1,2}/\d{1,2}/\d{4})", text)  # blank = blank, not the next word
         h["loss_date"] = m.group(1) if m else ""
         phones = re.findall(r"\(\d{3}\) \d{3}-\d{4}", text)
         h["phone"] = next((p for p in phones[1:] if p != phones[0]), "")

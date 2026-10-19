@@ -8,7 +8,7 @@ from . import ccc, mitchell
 from .labor import BODY, GROUPS, LABOR_CATEGORIES, PAINT, is_labor
 from .pdfutil import open_pages, page_text
 
-PARSER_VERSION = "2026.10.19"  # saved with each document; bump when parsing changes so old saves can be re-read
+PARSER_VERSION = "2026.10.19b"  # saved with each document; bump when parsing changes so old saves can be re-read
 PRICED = {"Part", "Other Charge", "Sublet"}
 
 
@@ -134,8 +134,9 @@ def _supplement_from_history(h):
 
 
 def version_key(doc):
-    """Sort key: the highest value is the job's current document."""
-    return (doc["supplement_no"], STAGE_RANK[doc["stage"]], doc["printed_at"] or "")
+    """Sort key: the highest value is the job's current document. printed_at: ISO text or a datetime."""
+    p = doc["printed_at"]
+    return (doc["supplement_no"], STAGE_RANK[doc["stage"]], p.isoformat() if hasattr(p, "isoformat") else p or "")
 
 
 CENT = Decimal("0.01")
@@ -278,7 +279,7 @@ _DROP = {"Parts", "Taxable Parts", "Parts Total", "Parts Adjustments", "Taxable"
          "Net Supplement Amount"}
 
 
-def _short_model(model):
+def short_model(model):
     """'Silverado LTZ 4 Door Crew Cab...' -> 'Silverado'; '1500 Silverado LTZ...' -> '1500 Silverado'; drops trim/engine/body."""
     parts = model.split()
     if not parts:
@@ -369,7 +370,7 @@ def summarize(r):
         "history": r["history"],
         "customer": h.get("customer", ""),
         "ro_number": ro.strip(),  # as printed (CCC); Mitchell prints none - typed in by hand
-        "vehicle": " ".join(x for x in (v.get("year"), v.get("make"), _short_model(v.get("model", ""))) if x),
+        "vehicle": " ".join(x for x in (v.get("year"), v.get("make"), short_model(v.get("model", ""))) if x),
         "vin": v.get("vin", ""),
         "insurance": h.get("insurance", ""),
         "claim": h.get("claim", ""),

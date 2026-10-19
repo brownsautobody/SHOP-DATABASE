@@ -1,8 +1,9 @@
 """Core tables (see docs/data-model.md). Later features only add tables; these keep their shape."""
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 Money = Numeric(10, 2, asdecimal=True)  # exact: Decimal in Python, numeric(10,2) in the database
@@ -11,6 +12,20 @@ Hours = Numeric(8, 2, asdecimal=True)
 
 def now():
     return datetime.now(timezone.utc)
+
+
+class UtcDateTime(TypeDecorator):
+    """A moment in time, kept as UTC and always handed back time-zone aware (SQLite forgets the zone)."""
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None and value.tzinfo is not None:
+            value = value.astimezone(timezone.utc)
+        return value.replace(tzinfo=None) if value is not None and dialect.name == "sqlite" else value
+
+    def process_result_value(self, value, dialect):
+        return value.replace(tzinfo=timezone.utc) if value is not None and value.tzinfo is None else value
 
 
 class Base(DeclarativeBase):
@@ -77,8 +92,8 @@ class Job(Tracked, Base):
     claim_no: Mapped[str] = mapped_column(String(60), default="", index=True)
     adjuster: Mapped[str] = mapped_column(String(200), default="")
     estimator: Mapped[str] = mapped_column(String(120), default="")
-    loss_date: Mapped[str] = mapped_column(String(20), default="")
-    deductible: Mapped[str] = mapped_column(String(60), default="")
+    loss_date: Mapped[date | None] = mapped_column(Date)  # as printed; the text stays in the estimate's parse
+    deductible: Mapped[Decimal | None] = mapped_column(Money)
     # use_alter: jobs <-> estimate_documents point at each other
     current_document_id: Mapped[int | None] = mapped_column(
         ForeignKey("estimate_documents.id", use_alter=True, name="fk_jobs_current_document"))
@@ -120,8 +135,19 @@ class EstimateDocument(Tracked, Base):
     display: Mapped[str] = mapped_column(String(200), default="")
     stage: Mapped[str] = mapped_column(String(20))
     supplement_no: Mapped[int] = mapped_column(Integer, default=0)
-    printed_at: Mapped[str] = mapped_column(String(19), default="")  # ISO text, as the parser gives it
+    printed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, index=True)  # the print time, in UTC
     supplement_amount: Mapped[Decimal | None] = mapped_column(Money)
+    # job_numbers() of this version (estimate_parser/core.py), saved when it is saved or re-read so lists and reports
+    # sum them in SQL; job_numbers() stays the only place they are worked out
+    body_hours: Mapped[Decimal | None] = mapped_column(Hours)
+    refinish_hours: Mapped[Decimal | None] = mapped_column(Hours)
+    mechanical_hours: Mapped[Decimal | None] = mapped_column(Hours)
+    other_hours: Mapped[Decimal | None] = mapped_column(Hours)
+    total_hours: Mapped[Decimal | None] = mapped_column(Hours)
+    labor_amount: Mapped[Decimal | None] = mapped_column(Money)
+    parts: Mapped[Decimal | None] = mapped_column(Money)
+    tax: Mapped[Decimal | None] = mapped_column(Money)
+    grand_total: Mapped[Decimal | None] = mapped_column(Money)
     needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
     review_reasons: Mapped[list] = mapped_column(JSON, default=list)
     parser_version: Mapped[str] = mapped_column(String(20))

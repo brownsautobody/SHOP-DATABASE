@@ -1,18 +1,24 @@
 """Store a parse_pdf() result: find or create the job, keep the PDF, add a new estimate version."""
 import hashlib
-from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import func, select
 
-from estimate_parser.core import PARSER_VERSION, jsonable, version_key
+from estimate_parser.core import PARSER_VERSION, job_numbers, jsonable, version_key
 from .models import (AuditLog, Customer, EstimateDocument, EstimateLine, EstimateTotal, File, InsuranceCompany, Job,
                      Shop, Vehicle)
+from .values import printed_date, printed_money, printed_time
 
-# job fields filled from the estimate; a value already on the job (e.g. typed in by hand) is never overwritten
-_JOB_FIELDS = {"ro_number": ("summary", "ro_number"), "claim_no": ("summary", "claim"),
-               "adjuster": ("header", "adjuster"), "estimator": ("header", "estimator"),
-               "loss_date": ("header", "loss_date"), "deductible": ("header", "deductible")}
+# job fields filled from the estimate (where in the parse, and how printed text becomes the column's value); a value
+# already on the job (e.g. typed in by hand) is never overwritten
+_JOB_FIELDS = {"ro_number": ("summary", "ro_number", str), "claim_no": ("summary", "claim", str),
+               "adjuster": ("header", "adjuster", str), "estimator": ("header", "estimator", str),
+               "loss_date": ("header", "loss_date", printed_date), "deductible": ("header", "deductible", printed_money)}
+
+
+def _job_value(result, field):
+    src, key, convert = _JOB_FIELDS[field]
+    return convert(result[src].get(key) or "")
 
 
 def audit(s, table, row_id, action, field="", old=None, new=None, user_id=None, job_id=None):
@@ -66,12 +72,12 @@ def find_job(s, shop_id, ro, claim, vin="", printed=""):
             if job:
                 return job
     if vin and printed:
-        when = datetime.fromisoformat(printed)
+        when = printed_time(printed)
         for job in s.scalars(jobs.where(Job.vehicle.has(Vehicle.vin == vin)).order_by(Job.id.desc())):
             cur = job.current_document
             if claim and job.claim_no and claim != job.claim_no:
                 continue
-            if cur and cur.printed_at and abs((datetime.fromisoformat(cur.printed_at) - when).days) <= VIN_MATCH_DAYS:
+            if cur and cur.printed_at and abs((cur.printed_at - when).days) <= VIN_MATCH_DAYS:
                 return job
     return None
 
@@ -110,22 +116,23 @@ def save_parse(s, result, pdf_bytes, files_dir, user_id=None):
                                                           func.lower(InsuranceCompany.name) == ins.lower()],
                                    shop_id=shop_id, name=ins, created_by=user_id) if ins else None
         job = Job(shop_id=shop_id, customer=customer, vehicle=vehicle, insurance=insurance, created_by=user_id,
-                  **{f: result[src].get(key) or "" for f, (src, key) in _JOB_FIELDS.items()})
+                  **{f: _job_value(result, f) for f in _JOB_FIELDS})
         s.add(job)
         s.flush()
         audit(s, "jobs", job.id, "create", user_id=user_id, job_id=job.id)
     else:
-        for f, (src, key) in _JOB_FIELDS.items():
-            if not getattr(job, f) and result[src].get(key):
-                set_field(s, job, f, result[src][key], user_id, job.id)
+        for f in _JOB_FIELDS:
+            value = _job_value(result, f)
+            if getattr(job, f) in ("", None) and value not in ("", None):
+                set_field(s, job, f, value, user_id, job.id)
 
     d = result["document"]
     doc = EstimateDocument(
         job_id=job.id, file=_store_file(s, shop_id, pdf_bytes, result["filename"], files_dir), format=result["format"],
         title_raw=d["title_raw"], display=d["display"], stage=d["stage"], supplement_no=d["supplement_no"],
-        printed_at=d["printed_at"], supplement_amount=d["supplement_amount"], needs_review=bool(result["review"]),
-        review_reasons=result["review"], parser_version=PARSER_VERSION, parse=jsonable(result), created_by=user_id,
-        lines=_lines(result), totals=_totals(result))
+        printed_at=printed_time(d["printed_at"]), supplement_amount=d["supplement_amount"],
+        needs_review=bool(result["review"]), review_reasons=result["review"], parser_version=PARSER_VERSION,
+        parse=jsonable(result), created_by=user_id, lines=_lines(result), totals=_totals(result), **job_numbers(result))
     s.add(doc)
     s.flush()
     audit(s, "estimate_documents", doc.id, "create", new=doc.display, user_id=user_id, job_id=job.id)
@@ -138,9 +145,9 @@ def reparse_document(s, doc, result, user_id=None):
     job_id, d = doc.job_id, result["document"]
     old_version = doc.parser_version
     for field, value in (("display", d["display"]), ("stage", d["stage"]), ("supplement_no", d["supplement_no"]),
-                         ("printed_at", d["printed_at"]), ("supplement_amount", d["supplement_amount"]),
+                         ("printed_at", printed_time(d["printed_at"])), ("supplement_amount", d["supplement_amount"]),
                          ("needs_review", bool(result["review"])), ("review_reasons", result["review"]),
-                         ("parser_version", PARSER_VERSION)):
+                         ("parser_version", PARSER_VERSION), *job_numbers(result).items()):
         set_field(s, doc, field, value, user_id, job_id)
     doc.parse = jsonable(result)
     doc.lines = _lines(result)

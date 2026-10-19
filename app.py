@@ -3,12 +3,13 @@ import io
 from datetime import date, timedelta
 
 from flask import Flask, abort, redirect, request, send_file
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
-from db.models import EstimateDocument, File, Job, now
+from db.models import Customer, EstimateDocument, File, InsuranceCompany, Job, Vehicle, now
 from db.save import save_parse, set_field
 from db.session import DATA_DIR, init_db, make_engine
-from estimate_parser.core import NUMBER_FIELDS, doc_file_name, doc_type_name, job_numbers, parse_pdf, version_key
+from db.values import day_end, day_start, local
+from estimate_parser.core import NUMBER_FIELDS, doc_file_name, doc_type_name, parse_pdf, short_model, version_key
 from estimate_parser.render import job_page, jobs_list, upload_form
 
 app = Flask(__name__)
@@ -44,7 +45,7 @@ def doc_names(job):
     with the same title are numbered oldest first by print date (...-ESTIMATE.pdf, then ...-ESTIMATE-2.pdf)."""
     customer = job.customer.name if job.customer else ""
     seen, names = {}, {}
-    for d in sorted(job.documents, key=lambda d: (d.printed_at or "", d.id)):
+    for d in sorted(job.documents, key=lambda d: (d.printed_at.isoformat() if d.printed_at else "", d.id)):
         t = doc_type_name(d.stage, d.supplement_no)
         seen[t] = seen.get(t, 0) + 1
         names[d.id] = doc_file_name(customer, job.ro_number, t, seen[t])
@@ -60,33 +61,52 @@ def _periods(today):
             ("This year", today.replace(month=1, day=1).isoformat(), today.isoformat())]
 
 
+def _date_arg(text):
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def job_list_query(f):
+    """Jobs with their current estimate's saved numbers, filtered in SQL: status (open | closed | all), search q (RO #,
+    customer, VIN, claim #, insurance), start / end (the shop's dates the current estimate was printed)."""
+    doc = EstimateDocument
+    q = (select(Job.id, Job.ro_number, Job.claim_no, Job.closed_at, Customer.name.label("customer"),
+                InsuranceCompany.name.label("insurance"), Vehicle.vin, Vehicle.year, Vehicle.make, Vehicle.model,
+                doc.printed_at, doc.needs_review, *(getattr(doc, k) for k in NUMBER_FIELDS))
+         .outerjoin(doc, doc.id == Job.current_document_id)
+         .outerjoin(Customer, Customer.id == Job.customer_id)
+         .outerjoin(Vehicle, Vehicle.id == Job.vehicle_id)
+         .outerjoin(InsuranceCompany, InsuranceCompany.id == Job.insurance_id))
+    if f["status"] != "all":
+        q = q.where(Job.closed_at.is_(None) if f["status"] == "open" else Job.closed_at.is_not(None))
+    if start := _date_arg(f["start"]):
+        q = q.where(doc.printed_at >= day_start(start))
+    if end := _date_arg(f["end"]):
+        q = q.where(doc.printed_at < day_end(end))
+    if f["q"]:
+        q = q.where(or_(*(func.lower(c).contains(f["q"].lower(), autoescape=True)
+                          for c in (Job.ro_number, Customer.name, Vehicle.vin, Job.claim_no, InsuranceCompany.name))))
+    return q
+
+
 @app.route("/jobs")
 def jobs():
     f = {k: request.args.get(k, "").strip() for k in ("q", "start", "end", "status")}
     if f["status"] not in ("open", "closed", "all"):
         f["status"] = "open"
-    q = f["q"].lower()
-    jobs = select(Job)
-    if f["status"] != "all":
-        jobs = jobs.where(Job.closed_at.is_(None) if f["status"] == "open" else Job.closed_at.is_not(None))
-    rows = []
+    q = job_list_query(f)
     with Session() as s:
-        for j in s.scalars(jobs):
-            d = j.current_document
-            printed = (d.printed_at if d else "")[:10]  # the date the job's current estimate was printed
-            if (f["start"] and printed < f["start"]) or (f["end"] and printed > f["end"]):
-                continue
-            row = {"id": j.id, "ro": j.ro_number, "customer": j.customer.name if j.customer else "", "vehicle": _vehicle(j),
-                   "insurance": j.insurance.name if j.insurance else "", "claim": j.claim_no,
-                   "vin": j.vehicle.vin if j.vehicle else "", "date": printed,
-                   "needs_review": bool(d and d.needs_review), "closed": j.closed_at,
-                   "numbers": job_numbers(d.parse) if d else dict.fromkeys(NUMBER_FIELDS)}
-            if q and not any(q in str(row[k]).lower() for k in ("ro", "customer", "vin", "claim", "insurance")):
-                continue
-            rows.append(row)
-    rows.sort(key=lambda r: (r["date"], r["id"]), reverse=True)
-    totals = {k: round(sum(r["numbers"][k] or 0 for r in rows), 2) for k in NUMBER_FIELDS}
-    return jobs_list(rows, totals, f, _periods(date.today()))
+        found = s.execute(q.order_by(EstimateDocument.printed_at.desc().nulls_last(), Job.id.desc())).all()
+        sub = q.subquery()
+        sums = s.execute(select(*(func.sum(sub.c[k]) for k in NUMBER_FIELDS))).one()
+    rows = [{"id": r.id, "ro": r.ro_number, "customer": r.customer or "", "insurance": r.insurance or "",
+             "claim": r.claim_no, "vin": r.vin or "", "closed": r.closed_at, "needs_review": bool(r.needs_review),
+             "vehicle": " ".join(x for x in (r.year, r.make, short_model(r.model or "")) if x),
+             "date": local(r.printed_at).date().isoformat() if r.printed_at else "",
+             "numbers": {k: getattr(r, k) for k in NUMBER_FIELDS}} for r in found]
+    return jobs_list(rows, dict(zip(NUMBER_FIELDS, sums)), f, _periods(date.today()))
 
 
 @app.route("/closed")

@@ -2,17 +2,12 @@
 
 upload() answers ("job", id) when the estimate was filed with a job, or ("person", reason) when it waits for a person
 to choose. Each rule has a case where its two conditions disagree (same claim # but a different VIN, ...)."""
-import itertools
-
 import pytest
 
 from db.models import Job
-from db.save import save_parse
 from db.session import init_db, make_engine
-
-VIN_A = "1HGCM82633A004352"
-VIN_B = "2T1BURHE0JC034461"
-_n = itertools.count()
+from fakes import VIN_A, VIN_B, make
+from fakes import upload as _upload
 
 
 @pytest.fixture
@@ -23,27 +18,8 @@ def s(tmp_path):
         yield s
 
 
-def make(ro="", claim="", vin="", printed="2026-09-01T10:00:00", customer="DOE, JANE", phone="", insurance="Acme Ins",
-         supplement_no=0, stage="estimate", fmt="CCC ONE"):
-    """A parse_pdf()-shaped result holding only what matching and saving read."""
-    doc = {"title_raw": "Estimate", "display": "Estimate", "label": "Estimate", "stage": stage,
-           "supplement_no": supplement_no, "printed_at": printed, "supplement_amount": None}
-    header = {"ro_number": ro, "claim": claim, "customer": customer, "phone": phone, "insurance": insurance,
-              "adjuster": "", "estimator": "", "loss_date": "", "deductible": "",
-              "vehicle": {"year": "2020", "make": "Honda", "model": "Accord", "description": "2020 Honda Accord",
-                          "vin": vin, "mileage": ""}}
-    summary = {"document": doc, "history": None, "customer": customer, "ro_number": ro, "vehicle": "2020 Honda Accord",
-               "vin": vin, "insurance": insurance, "claim": claim, "labor": [], "total_labor_hours": 0,
-               "total_labor_amount": None, "parts_total": 0, "other_charges": [], "needs_review": False,
-               "review_reasons": []}
-    return {"filename": "test.pdf", "format": fmt, "pages": 1, "header": header, "document": doc, "history": None,
-            "charges": [], "totals": [], "checks": [], "review": [], "summary": summary}
-
-
 def upload(s, result):
-    doc, _ = save_parse(s, result, f"fake pdf {next(_n)}".encode(), s.files_dir)
-    s.flush()
-    return "job", doc.job_id
+    return _upload(s, result, s.files_dir)
 
 
 def first(s, **kw):

@@ -41,8 +41,10 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
   (`version_key()`). Job's RO # and customer follow the newest version unless the RO # was typed by hand.
 - **Jobs list** (`/jobs`): Open / Closed / All tabs; columns body / refinish / mech / other / total hours, labor $,
   parts $, tax $, grand total + totals row; search RO #, customer, VIN, claim #, insurance; date filter on estimate
-  print date (range, This month / Last month / This year). Numbers come only from `job_numbers()`; hours by type are
-  the estimate's printed labor totals rows (lines only when it prints none).
+  print date in the shop's time zone (range, This month / Last month / This year). Numbers come only from
+  `job_numbers()`; hours by type are the estimate's printed labor totals rows (lines only when it prints none). The
+  numbers are saved on each document when it is saved or re-read, and the list's search, filters, sort (newest
+  print time first) and totals row run in SQL (`job_list_query()` in `app.py`).
 - **Job page** (`/jobs/<id>`): header, Open/Closed status with Close / Reopen button, a tab per estimate version,
   needs-review reasons, hours and money as printed, job details (RO # editable), documents with PDF links.
 - **Document names**: every stored PDF downloads as `LAST-RO-TYPE.pdf` (e.g. `BOATMAN-4403-PRELIM-SUPPLEMENT-1.pdf`);
@@ -66,7 +68,7 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
   - `python tests/snapshot_report.py [folder] [--detail]` - which fields changed against the snapshots (or against
     `data/snapshots-baseline-step0`), grouped by field.
 - **Schema changes are Alembic migrations** in `migrations/versions/` (0001 baseline = schema before Alembic,
-  0002 `archived_at` -> `closed_at`). Update a database with `python tools/migrate.py`: it stamps a pre-Alembic
+  0002 `archived_at` -> `closed_at`, 0003 typed print time / loss date / deductible + saved job numbers). Update a database with `python tools/migrate.py`: it stamps a pre-Alembic
   database, then backs it up to `<data folder>/backups/<name>-YYYYMMDD-HHMM-before-<migration>.db` before each
   migration. A new database is created from the models and stamped; the app refuses to start on an out-of-date one.
   `tools/reparse_documents.py` also backs up first (`...-before-reparse.db`).
@@ -83,7 +85,9 @@ POST `/jobs/<id>/ro`, `/jobs/<id>/close`, `/jobs/<id>/reopen` · `/files/<id>` P
 - `estimate_parser/labor.py` - the one list of labor types and how each format prints them
 - `estimate_parser/pdfutil.py` - PDF rows / number helpers (`num()`, `dec()` -> Decimal)
 - `estimate_parser/render.py` - all HTML; job page = `JOB_SECTIONS` list (new feature = add a section function)
-- `db/models.py` - tables; `db/save.py` - `save_parse()`, `reparse_document()`, `find_job()`, `set_field()` (logs);
+- `db/values.py` - printed text -> typed values (`printed_time()` shop time -> UTC, `printed_date()`,
+  `printed_money()`), `SHOP_TZ` (America/Chicago; `SHOP_TIMEZONE` overrides), shop-day bounds
+- `db/models.py` - tables (`UtcDateTime` column type: stored UTC, read back time-zone aware); `db/save.py` - `save_parse()`, `reparse_document()`, `find_job()`, `set_field()` (logs);
   `db/session.py` - engine, `init_db()` (new database: create + stamp; old schema: refuse); `db/migrate.py` -
   Alembic helpers, `backup()`; `migrations/` + `alembic.ini`
 - `kb/ccc_help.py` + `tools/sync_ccc_kb.py` - knowledge base sync
@@ -91,8 +95,10 @@ POST `/jobs/<id>/ro`, `/jobs/<id>/close`, `/jobs/<id>/reopen` · `/files/<id>` P
   change, `--all`), `tools/reopen_jobs.py` (one-time: reopen jobs auto-filed as finished), `tools/migrate.py`
 
 ## Database (built tables)
-shops, users, customers, vehicles, insurance_companies, jobs (`closed_at` = closed by a person), files,
-estimate_documents (full parse JSON kept), estimate_lines, estimate_totals, audit_log, kb_sources / kb_nodes /
+shops, users, customers, vehicles, insurance_companies, jobs (`closed_at` = closed by a person; `loss_date` date,
+`deductible` numeric), files,
+estimate_documents (full parse JSON kept; `printed_at` UTC time; the `job_numbers()` columns body_hours ...
+grand_total), estimate_lines, estimate_totals, audit_log, kb_sources / kb_nodes /
 kb_revisions / kb_links. Rules: nothing important overwritten or deleted; every change in `audit_log`; later
 features only add tables. Full design and future tables: `docs/data-model.md`.
 
@@ -107,11 +113,12 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 ## Known gaps / to-dos
 - No login; `created_by` / `user_id` always empty.
 - Close job has no checklist yet (planned: Final bill sent / All payments received / Audits done gate it).
+- SQLite has no exact decimal type: it keeps numeric columns as floating point, and SQLAlchemy rounds them back to
+  2 places when reading (SQL sums too). Exact end to end on PostgreSQL. Python-side sums are always Decimal.
 - Migration 0001 is SQLite-shaped (jobs <-> estimate_documents and shops <-> users point at each other); check it
   before the first PostgreSQL database.
 - Leftover production-board tables (`production_stages`, `job_assignments`, `job_stage_events`) sit in `data/shop.db`
   and `data/test/`; migrations leave them alone.
-- Job list loads every job and filters in Python - fine at this size.
 - `Job.current_stage_id`, `dropped_off_at`, `promised_at`, `delivered_at` exist but nothing uses them.
 - README's test-database command is broken: `set SHOP_DATA_DIR=data<TAB>est` should be `data\test`.
 - Line endings: files are CRLF (Windows). Git under WSL shows every line changed - use Windows git, or set
@@ -120,6 +127,8 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 - Old branches `core-database`, `database-design`, `worktree-needs-review-flag` and a prunable worktree remain.
 
 ## Change history (newest first; add one line per commit)
+- 2026-10-19 - Refactor Step 2: migration 0003 (printed_at UTC time, loss_date date, deductible numeric, job numbers
+  saved per document); jobs list in SQL; shop time zone; CCC blank loss date no longer reads 'Days' (parser 2026.10.19b).
 - 2026-10-19 - Refactor Step 1: parser 2026.10.19 - CCC detected before Mitchell, RO # kept as printed, one labor
   list (CCC glass = Glass Labor), job hours from printed labor rows, Decimal money, Mitchell owner phone.
 - 2026-10-19 - Refactor Step 0: pytest snapshot + matching + migration tests, Alembic (0001 baseline, 0002 rename),

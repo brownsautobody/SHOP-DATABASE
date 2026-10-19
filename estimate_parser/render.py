@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from html import escape
 from urllib.parse import quote
 
+from db.values import SHOP_TZ
+
 CSS = """
 :root{--bg:#f6f7f9;--card:#fff;--ink:#1c2430;--mute:#66707d;--line:#e2e6eb;--accent:#1f5fbf;--ok:#1a7f4b;--bad:#b3261e}
 @media (prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1d222a;--ink:#e8ecf1;--mute:#98a2b0;--line:#2c333d;--accent:#7fb0ff;--ok:#5fd394;--bad:#ff8a80}}
@@ -65,12 +67,12 @@ def _utc(d):
 
 
 def _dt(v):
-    """ISO text or datetime -> '9/17/2026 1:20 PM'."""
+    """ISO text or datetime -> '9/17/2026 1:20 PM'. Saved times are UTC and shown in the shop's time zone."""
     if not v:
         return ""
     d = v if isinstance(v, datetime) else datetime.fromisoformat(v)
-    if isinstance(v, datetime):  # saved times are UTC (SQLite hands them back without the zone); printed times are text
-        d = _utc(d).astimezone()
+    if isinstance(v, datetime):  # SQLite hands some saved times back without the zone - they are UTC
+        d = _utc(d).astimezone(SHOP_TZ)
     return f"{d.month}/{d.day}/{d.year} {d.strftime('%I:%M %p').lstrip('0')}"
 
 
@@ -190,8 +192,9 @@ def _job_details(ctx):
     j = ctx["job"]
     ro = (f"<form class='ro' method='post' action='/jobs/{j['id']}/ro'><input id='ro' name='ro' value='{escape(j['ro'])}' "
           f"maxlength='20' aria-label='RO #'><button class='small'>Save</button></form>")
+    loss = j["loss_date"]
     fields = [("VIN", j["vin"]), ("Adjuster", j["adjuster"]), ("Estimator on estimate", j["estimator"]),
-              ("Deductible", j["deductible"]), ("Loss date", j["loss_date"])]
+              ("Deductible", _n(j["deductible"], 2, "$")), ("Loss date", f"{loss.month}/{loss.day}/{loss.year}" if loss else "")]
     info = "".join(f"<div><span>{escape(k)}</span>{escape(str(v)) or '&mdash;'}</div>" for k, v in fields)
     return f"<h2>Job details</h2><div class='card'><div class='grid'><div><span>RO #</span>{ro}</div>{info}</div></div>"
 

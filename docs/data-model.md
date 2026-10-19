@@ -27,7 +27,8 @@ tables built first never change shape.
    ones added later.
 5. **Lists the shop may change live are tables, not code:** repair stages, employee roles, labor types, vendors.
    The admin page edits them.
-6. Money is `numeric(10,2)`; times are timezone-aware timestamps.
+6. Money is `numeric(10,2)` (Python `Decimal`); times are timezone-aware timestamps kept in UTC and shown in the
+   shop's time zone. Printed text (dates, deductible) is typed in its column and kept as printed in the parse JSON.
 7. Top-level tables carry `shop_id` (one shop today) so a second location never needs a redesign.
 8. Each employee has their own login, so `created_by` / `moved_by` / `received_by` always names a person.
 
@@ -53,7 +54,9 @@ insurance company, `claim_no`, adjuster, estimator, loss date, deductible, `curr
 
 **`estimate_documents`** - job, file, `format` (CCC ONE | Mitchell), `title_raw`, `stage` (preliminary | estimate |
 to_repair | of_record | unknown), `supplement_no` (0 = original), `printed_at`, `supplement_amount`,
-`needs_review` + `review_reasons` (from `review_flags()`), `parser_version`, and the **full parse result as JSON**
+`needs_review` + `review_reasons` (from `review_flags()`), `parser_version`, the `job_numbers()` columns (body /
+refinish / mechanical / other / total hours, labor $, parts $, tax $, grand total - lists and reports sum these in
+SQL), and the **full parse result as JSON**
 (printed history table included) so old documents can be re-read if the parser improves.
 
 ### How a supplement arrives
