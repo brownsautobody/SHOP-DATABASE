@@ -98,19 +98,19 @@ It can be brought back from git history. Tables it used:
   `estimate_lines`.
 
 ### Closing a job
-- **Closed** = every invoice closed out, everything paid, the shop's audits done. Delivered does **not** mean closed.
-  Order: Delivered -> Final bill sent -> All payments received -> Audits done -> Closed.
-- Built: a Close job / Reopen job button on the job page sets or clears `jobs.closed_at` (logged as `close` /
-  `reopen`); the job list has Open / Closed / All tabs. Planned: the checklist below gates the Close button.
-- **Yes/No checklist per job**, confirmed by a person (never set by an uploaded PDF, its name or contents):
-  - `checklist_items` - name, display order, active, `required_to_close`. Edited on Settings, so new items need
-    no code. Starts with *Final bill sent*, *All payments received* and *Audits done*.
-  - `job_checks` - job, item, yes/no, set by, set at; every change also in `audit_log`.
-- Payments that arrive after the final bill need their own record (e.g. `payments`: job, payer insurance/customer,
-  amount, date, method, recorded by); the estimate's printed "Received from / Balance due" rows are only what was
-  printed at the time.
-- Close sets `jobs.closed_at` (logged as `close`), only when every required checklist item is Yes; a closed job
-  can be reopened.
+Built (`db/closing.py`). A job is closed **for bookkeeping**: only after the file is audited, everything is closed
+out, the shop is paid and the numbers are right for bookkeeping. Delivered does **not** mean closed. No payment records
+in this app - bookkeeping handles payments.
+- **Yes/No checklist per job**, answered by a person (never by an uploaded PDF, its name or contents):
+  - `checklist_items` - name, display order (`position`), active, `required_to_close`. Rows, not code (a Settings
+    page will edit them). A new database starts with *File audited*, *Everything closed out*, *Paid in full* and
+    *Numbers OK for bookkeeping*, all required (`init_db()` adds them when the table is empty).
+  - `job_checks` - job, item, yes/no, set by, set at (one row per job and item); every change also in `audit_log`.
+- **Close** sets `jobs.closed_at` / `closed_by` (logged as `close`), only when every active required item is Yes.
+- **Closed jobs are locked**: an upload matching one waits in `pending_uploads` (`closed_job`) and says the job is
+  closed; checklist answers, the RO # and re-read numbers don't change. A person **Reopens** it with a required note
+  (`audit_log.note`); the waiting upload can then be added. Reopening keeps the answers, but closing again needs every
+  required item Yes again.
 
 ### Customer communication (front office)
 - `communications` - job, customer, channel (call / text / email / in person), inbound or outbound, summary,

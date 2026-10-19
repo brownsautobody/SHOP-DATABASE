@@ -18,10 +18,10 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
 |---|---|
 | 1. Estimate PDF parsing + display + "Needs review" checks | Built; tested on 54 real 2026 CCC estimates + Mitchell samples |
 | 2. Core tables, save every upload to its job, job list, job page | Built |
-| 2b. Open / Closed jobs (close/reopen by a person) | Built |
+| 2b. Open / Closed jobs; closing for bookkeeping with a required checklist, closed jobs locked | Built |
 | 3. Bookkeeping export, financial / performance tracking (from `job_numbers()`) | **Next** |
 | 4. Web login + admin page | Not started (`users` table exists, `user_id` is always None) |
-| 5. Production board, close-job checklist, communication log, parts receiving | Designed in `docs/data-model.md`; production board was built once (commit 44a75d4) then removed |
+| 5. Production board, communication log, parts receiving | Designed in `docs/data-model.md`; production board was built once (commit 44a75d4) then removed |
 
 ## Features (what a user can do today)
 - **Upload estimate** (`/`): CCC ONE or Mitchell, estimate or supplement, max 25 MB. Unparseable PDFs show the reason.
@@ -59,7 +59,12 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
   `job_numbers()`; hours by type are the estimate's printed labor totals rows (lines only when it prints none). The
   numbers are saved on each document when it is saved or re-read, and the list's search, filters, sort (newest
   print time first) and totals row run in SQL (`job_list_query()` in `app.py`).
-- **Job page** (`/jobs/<id>`): header, Open/Closed status with Close / Reopen button, a tab per estimate version,
+- **Closing for bookkeeping** (`db/closing.py`): a Yes/No checklist per job (File audited, Everything closed out, Paid
+  in full, Numbers OK for bookkeeping - rows in `checklist_items`, all required); **Close** only when every required
+  item is Yes (sets `closed_at` / `closed_by`). A closed job is **locked** - new estimates for it wait for a person,
+  its checklist, RO # and re-read numbers don't change - until a person **Reopens** it with a required note
+  (`audit_log.note`). Reopening keeps the answers; closing again needs them all Yes again. No payments in this app.
+- **Job page** (`/jobs/<id>`): header, Open/Closed status with the closing checklist and Close / Reopen, a tab per estimate version,
   needs-review reasons, hours and money as printed, job details (RO # editable), documents with PDF links.
 - **Document names**: every stored PDF downloads as `LAST-RO-TYPE.pdf` (e.g. `BOATMAN-4403-PRELIM-SUPPLEMENT-1.pdf`);
   the uploaded name is kept too.
@@ -88,6 +93,7 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
     current version unless typed by hand.
   - `tests/test_rules_db.py` - unique rules, duplicate RO #, parse history; `tests/test_reparse_tool.py` - the
     re-read tool on a sample PDF (closed job kept, reopened job follows).
+  - `tests/test_closing.py` - the closing checklist, locked closed jobs, reopen with a note.
   - `tests/fakes.py` - hand-made estimates (`make()`) and `upload()` for tests.
   - `tests/test_parser_rules.py` - parser rules on hand-made inputs (format detection, RO #, labor types, printed
     hours, exact money, Mitchell owner phone).
@@ -97,14 +103,15 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
 - **Schema changes are Alembic migrations** in `migrations/versions/` (0001 baseline = schema before Alembic,
   0002 `archived_at` -> `closed_at`, 0003 typed print time / loss date / deductible + saved job numbers,
   0004 `pending_uploads`, 0005 `jobs.mileage_in` copied from vehicles, `vehicles.mileage` dropped, 0006
-  `estimate_parses` (each stored parse copied in as the first reading), unique sha256 and RO #). Update a database with `python tools/migrate.py`: it stamps a pre-Alembic
+  `estimate_parses` (each stored parse copied in as the first reading), unique sha256 and RO #, 0007 closing
+  checklist tables, `jobs.closed_by`, `audit_log.note`). Update a database with `python tools/migrate.py`: it stamps a pre-Alembic
   database, then backs it up to `<data folder>/backups/<name>-YYYYMMDD-HHMM-before-<migration>.db` before each
   migration. A new database is created from the models and stamped; the app refuses to start on an out-of-date one.
   `tools/reparse_documents.py` also backs up first (`...-before-reparse.db`).
 
 ## Routes (`app.py`)
 `/` upload · `/jobs` list (`?status=open|closed|all&q=&start=&end=`) · `/jobs/<id>` (`?v=<doc id>`) ·
-POST `/jobs/<id>/ro`, `/jobs/<id>/close`, `/jobs/<id>/reopen` · `/pending` list, `/pending/<id>`, POST
+POST `/jobs/<id>/ro`, `/jobs/<id>/check` (`item`, `value` yes|no), `/jobs/<id>/close`, `/jobs/<id>/reopen` (`note`) · `/pending` list, `/pending/<id>`, POST
 `/pending/<id>/resolve` (`job_id` = a candidate job or `new`) · `/files/<id>` PDF download ·
 `/documents/<id>`, `/closed`, `/archive` redirects for old links.
 
@@ -117,6 +124,7 @@ POST `/jobs/<id>/ro`, `/jobs/<id>/close`, `/jobs/<id>/reopen` · `/pending` list
 - `estimate_parser/render.py` - all HTML; job page = `JOB_SECTIONS` list (new feature = add a section function)
 - `db/values.py` - printed text -> typed values (`printed_time()` shop time -> UTC, `printed_date()`,
   `printed_money()`), `SHOP_TZ` (America/Chicago; `SHOP_TIMEZONE` overrides), shop-day bounds
+- `db/closing.py` - checklist, `close_job()`, `reopen_job()`, `DEFAULT_ITEMS`, `seed()`
 - `db/matching.py` - `match_job()`: the matching rules, `REASONS` for a person
 - `db/models.py` - tables (`UtcDateTime` column type: stored UTC, read back time-zone aware); `db/save.py` - `save_parse()` (-> `Saved`: document or pending), `resolve_pending()`, `reparse_document()`,
   `set_field()` (logs);
@@ -132,7 +140,7 @@ shops, users, customers, vehicles (shared per VIN), insurance_companies, jobs (R
 `loss_date` date, `deductible` numeric, `mileage_in`), files (sha256 unique),
 estimate_documents (`current_parse_id` -> estimate_parses, the history of every reading; `printed_at` UTC time; the `job_numbers()` columns body_hours ...
 grand_total), pending_uploads (upload waiting for a person: file, parse, reason, candidates, resolution),
-estimate_lines, estimate_totals, audit_log, kb_sources / kb_nodes /
+estimate_lines, estimate_totals, checklist_items, job_checks, audit_log (with `note`), kb_sources / kb_nodes /
 kb_revisions / kb_links. Rules: nothing important overwritten or deleted; every change in `audit_log`; later
 features only add tables. Full design and future tables: `docs/data-model.md`.
 
@@ -146,7 +154,10 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 
 ## Known gaps / to-dos
 - No login; `created_by` / `user_id` always empty.
-- Close job has no checklist yet (planned: Final bill sent / All payments received / Audits done gate it).
+- No Settings page yet: checklist items are edited in the database.
+- `data/test2026` (41) and `data/test` (15) jobs are all closed: they were filed as archived automatically before
+  closing was a person's choice. `tools/reopen_jobs.py` reopens them (with a note) if their numbers should follow
+  re-reads.
 - SQLite has no exact decimal type: it keeps numeric columns as floating point, and SQLAlchemy rounds them back to
   2 places when reading (SQL sums too). Exact end to end on PostgreSQL. Python-side sums are always Decimal.
 - Migration 0001 is SQLite-shaped (jobs <-> estimate_documents and shops <-> users point at each other); check it
@@ -154,7 +165,6 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 - Leftover production-board tables (`production_stages`, `job_assignments`, `job_stage_events`) sit in `data/shop.db`
   and `data/test/`; migrations leave them alone.
 - `Job.current_stage_id`, `dropped_off_at`, `promised_at`, `delivered_at` exist but nothing uses them.
-- README's test-database command is broken: `set SHOP_DATA_DIR=data<TAB>est` should be `data\test`.
 - Line endings: files are CRLF (Windows). Git under WSL shows every line changed - use Windows git, or set
   `core.autocrlf=true` in the WSL git config before committing from WSL.
 - Python packages are installed on Windows only, not in WSL.
@@ -163,6 +173,8 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 - Old branches `core-database`, `database-design`, `worktree-needs-review-flag` and a prunable worktree remain.
 
 ## Change history (newest first; add one line per commit)
+- 2026-10-19 - Refactor Step 6: closing for bookkeeping - checklist (migration 0007), Close only when all required
+  items are Yes, closed jobs locked, Reopen with a required note.
 - 2026-10-19 - Refactor Step 5: migration 0006 - unique files.sha256 and jobs.ro_number, `estimate_parses` history;
   duplicate RO # -> a person; re-reads keep history and never change a closed job's numbers.
 - 2026-10-19 - Refactor Step 4: vehicles shared per VIN, mileage on the job (migration 0005), customers by name AND

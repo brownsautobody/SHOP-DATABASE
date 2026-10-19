@@ -6,8 +6,9 @@ from urllib.parse import quote
 from flask import Flask, abort, redirect, request, send_file
 from sqlalchemy import func, or_, select
 
+from db import closing
 from db.matching import REASONS
-from db.models import Customer, EstimateDocument, File, InsuranceCompany, Job, PendingUpload, Vehicle, now
+from db.models import ChecklistItem, Customer, EstimateDocument, File, InsuranceCompany, Job, PendingUpload, Vehicle
 from db.save import DuplicateRO, resolve_pending, save_parse, set_field
 from db.session import DATA_DIR, init_db, make_engine
 from db.values import day_end, day_start, local
@@ -190,7 +191,11 @@ def job(job_id):
                 "dup": "This PDF was already uploaded - nothing new was saved."}.get(request.args.get("saved"), "")
         if request.args.get("ro_taken"):
             note = f"RO # {request.args['ro_taken']} is already on job {request.args.get('on', '?')} - not saved."
-        return job_page({"job": info, "versions": versions, "note": note,
+        note = request.args.get("msg") or note
+        checks = [{"id": i.id, "name": i.name, "required": i.required_to_close, "value": c.value if c else None}
+                  for i, c in closing.checklist(s, j)]
+        return job_page({"job": info, "versions": versions, "note": note, "checks": checks,
+                         "todo": closing.still_to_do(s, j),
                          "shown": next((v for v in versions if shown and v["id"] == shown.id), None),
                          "summary": shown.parse["summary"] if shown else None})
 
@@ -199,6 +204,8 @@ def job(job_id):
 def set_ro(job_id):
     with Session() as s:
         j = s.get(Job, job_id) or abort(404)
+        if j.closed_at is not None:
+            return _back(job_id, "The job is closed - reopen it to change the RO #.")
         ro = request.form.get("ro", "").strip()
         if ro and (other := s.scalar(select(Job.id).where(Job.ro_number == ro, Job.id != j.id).limit(1))):
             return redirect(f"/jobs/{job_id}?ro_taken={quote(ro)}&on={other}")
@@ -207,24 +214,48 @@ def set_ro(job_id):
     return redirect(f"/jobs/{job_id}")
 
 
-@app.route("/jobs/<int:job_id>/close", methods=["POST"])
-def close_job(job_id):
-    """A person closes a job once every invoice is closed out, everything is paid and the shop's audits are done."""
+def _back(job_id, msg=""):
+    return redirect(f"/jobs/{job_id}" + (f"?msg={quote(msg)}" if msg else ""))
+
+
+@app.route("/jobs/<int:job_id>/check", methods=["POST"])
+def answer_check(job_id):
+    """A person answers one closing checklist item Yes or No."""
     with Session() as s:
         j = s.get(Job, job_id) or abort(404)
-        if j.closed_at is None:
-            set_field(s, j, "closed_at", now(), job_id=j.id, action="close")
-            s.commit()
-    return redirect(f"/jobs/{job_id}")
+        item = s.get(ChecklistItem, request.form.get("item", type=int) or 0) or abort(400)
+        try:
+            closing.set_check(s, j, item, request.form.get("value") == "yes")
+        except closing.JobClosed as e:
+            return _back(job_id, str(e))
+        s.commit()
+    return _back(job_id)
+
+
+@app.route("/jobs/<int:job_id>/close", methods=["POST"])
+def close_job(job_id):
+    """Closed only when every required checklist item is Yes (db/closing.py); then the job is locked."""
+    with Session() as s:
+        j = s.get(Job, job_id) or abort(404)
+        try:
+            closing.close_job(s, j)
+        except ValueError as e:
+            return _back(job_id, str(e))
+        s.commit()
+    return _back(job_id)
 
 
 @app.route("/jobs/<int:job_id>/reopen", methods=["POST"])
 def reopen_job(job_id):
+    """Reopen with a note saying why (kept in the change log); the checklist answers stay."""
     with Session() as s:
         j = s.get(Job, job_id) or abort(404)
-        set_field(s, j, "closed_at", None, job_id=j.id, action="reopen")
+        try:
+            closing.reopen_job(s, j, request.form.get("note", ""))
+        except ValueError as e:
+            return _back(job_id, str(e))
         s.commit()
-    return redirect(f"/jobs/{job_id}")
+    return _back(job_id)
 
 
 @app.route("/documents/<int:doc_id>")

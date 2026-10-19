@@ -78,13 +78,13 @@ document type / print time can't be read, the page shows a red "Needs review" bo
 The app's job for now: **a clean, organized record of every job and its estimate documents**, the base for
 tracking financials and performance and for bookkeeping exports later.
 
-A job is **Open** until a person closes it. **Closed** means every invoice is closed out, everything is paid and the
-shop's audits are done - an uploaded PDF never closes a job. The job page has a Close job / Reopen job button
-(each change is logged).
+A job is **Open** until a person closes it **for bookkeeping**: the job page's checklist (File audited, Everything
+closed out, Paid in full, Numbers OK for bookkeeping) must all be Yes. A closed job is locked until someone reopens it
+with a note - an uploaded PDF never closes or changes one. Every change is logged.
 
-Every uploaded estimate is filed with its job. It is matched to an existing job by RO #,
-then claim #, then the same VIN within 90 days (the first estimate often has no claim # and sometimes a different
-RO# than the final bill; the same car back months later is a new job). The job's RO# follows its newest document; a supplement becomes a new version of the same job
+Every uploaded estimate is filed with its job when the match is sure - same RO #, or same claim # and VIN, or the same
+VIN within 90 days - and waits on the **Waiting for a person** page when it isn't (VINs that disagree, several
+possible jobs, a closed job, an RO # another job has). Nothing is filed until a person chooses. The job's RO# follows its newest document; a supplement becomes a new version of the same job
 and the newest version becomes the job's current estimate. Uploading the same PDF twice keeps one copy.
 
 Pages:
@@ -105,7 +105,7 @@ bookkeeping export will use. Every change is still recorded in `audit_log`; it j
 To try things without touching the real data, load the sample PDFs into a separate test database:
 
 ```
-set SHOP_DATA_DIR=data	est
+set SHOP_DATA_DIR=data\test
 python tools/load_samples.py
 python app.py
 ```
@@ -118,7 +118,9 @@ somewhere else.
 
 ```
 pip install -r requirements.txt
-python app.py        # then open http://127.0.0.1:5000 and upload a PDF
+python tools/migrate.py   # update the database's tables (backs it up first)
+python app.py             # then open http://127.0.0.1:5000 and upload a PDF
+python -m pytest          # the tests (parser snapshots, matching, closing, ...)
 ```
 
 Put test PDFs in `samples/` (ignored by git so customer data stays local).

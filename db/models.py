@@ -105,8 +105,9 @@ class Job(Tracked, Base):
     dropped_off_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     promised_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # set by a person once every invoice is closed out, everything is paid and the shop's audits are done
+    # set by a person once every required checklist item is Yes (db/closing.py); a closed job is locked
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 
     customer: Mapped[Customer | None] = relationship()
     vehicle: Mapped[Vehicle | None] = relationship()
@@ -294,6 +295,28 @@ class KbLink(Base):
     href: Mapped[str] = mapped_column(String(1000))
 
 
+class ChecklistItem(Tracked, Base):
+    """One question answered before a job can be closed. A list the shop changes: rows, not code (db/closing.py)."""
+    __tablename__ = "checklist_items"
+    name: Mapped[str] = mapped_column(String(120))
+    position: Mapped[int] = mapped_column(Integer, default=0)  # display order
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    required_to_close: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class JobCheck(Base):
+    """A job's answer to one checklist item; every change is also in audit_log."""
+    __tablename__ = "job_checks"
+    __table_args__ = (Index("uq_job_checks_job_item", "job_id", "item_id", unique=True),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), index=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("checklist_items.id"))
+    value: Mapped[bool | None] = mapped_column(Boolean)  # Yes / No; None = not answered
+    set_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    set_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))  # set_field() keeps it like other rows
+
+
 class AuditLog(Base):
     """Every change, for every table (rule 4). Append only."""
     __tablename__ = "audit_log"
@@ -302,8 +325,9 @@ class AuditLog(Base):
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     table_name: Mapped[str] = mapped_column(String(60))
     row_id: Mapped[int] = mapped_column(Integer)
-    action: Mapped[str] = mapped_column(String(20))  # create, update, manual, close, reopen
+    action: Mapped[str] = mapped_column(String(20))  # create, update, manual, close, reopen, resolve
     field: Mapped[str] = mapped_column(String(60), default="")
     old_value: Mapped[str | None] = mapped_column(Text)
     new_value: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str] = mapped_column(Text, default="")  # why, when a person had to say (e.g. reopening a job)
     job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), index=True)  # quick "everything on this job"

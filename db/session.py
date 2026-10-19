@@ -43,5 +43,7 @@ def init_db(engine):
     with Session() as s:
         if s.scalar(select(Shop.id).limit(1)) is None:
             s.add(Shop(name="Brown's Body Shop"))
-            s.commit()
+        from .closing import seed
+        seed(s)  # the default closing checklist, if the database has none
+        s.commit()
     return Session

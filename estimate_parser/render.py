@@ -263,15 +263,33 @@ def _job_documents(ctx):
             f"<th>Printed</th><th class='n'>Supplement amount</th><th>Uploaded</th></tr></thead><tbody>{rows}</tbody></table></div>")
 
 
+def _answer(job_id, c, closed):
+    word = {True: "Yes", False: "No", None: "&mdash;"}[c["value"]]
+    if closed:
+        return word
+    return (f"<form class='row' method='post' action='/jobs/{job_id}/check'><input type='hidden' name='item' value='{c['id']}'>"
+            + "".join(f"<button name='value' value='{v}' class='{'small' if c['value'] is (v == 'yes') else 'plain'}'>"
+                      f"{label}</button>" for v, label in (("yes", "Yes"), ("no", "No"))) + "</form>")
+
+
 def _job_status(ctx):
-    """Open until a person closes the job: every invoice closed out, everything paid, the shop's audits done."""
-    j = ctx["job"]
+    """Closing for bookkeeping: the checklist, then Close (only when every required item is Yes) or Reopen (with a
+    note). A closed job is locked."""
+    j, checks, todo = ctx["job"], ctx.get("checks", []), ctx.get("todo", [])
+    rows = "".join(f"<tr><td>{escape(c['name'])}{'' if c['required'] else ' <span class=\"sec\">(optional)</span>'}</td>"
+                   f"<td>{_answer(j['id'], c, j['closed'])}</td></tr>" for c in checks)
+    table = f"<table style='max-width:520px;margin:6px 0 10px'><tbody>{rows}</tbody></table>" if rows else ""
     if j["closed"]:
-        return (f"<form class='row note' method='post' action='/jobs/{j['id']}/reopen'><span class='chip done'>Closed</span>"
-                f"<span class='sec'>{_dt(j['closed'])}</span><button class='plain'>Reopen job</button></form>")
-    return (f"<form class='row note' method='post' action='/jobs/{j['id']}/close'><span class='chip open'>Open</span>"
-            "<span class='sec'>Close only when every invoice is closed out, everything is paid and the shop's audits "
-            "are done.</span><button class='small'>Close job</button></form>")
+        return (f"<div class='note'><div class='row'><span class='chip done'>Closed</span><span class='sec'>"
+                f"{_dt(j['closed'])} - locked: nothing on this job changes until it is reopened.</span></div>{table}"
+                f"<form class='row' method='post' action='/jobs/{j['id']}/reopen'><input class='txt' name='note' required "
+                "placeholder='Why is it being reopened?' aria-label='Why reopen' style='flex:1;min-width:220px'>"
+                "<button class='plain'>Reopen job</button></form></div>")
+    close = ("<button class='small'>Close job</button>" if not todo else
+             f"<button class='small' disabled>Close job</button><span class='sec'>Still to do: {escape(', '.join(todo))}</span>")
+    return (f"<div class='note'><div class='row'><span class='chip open'>Open</span><span class='sec'>Close for bookkeeping "
+            f"once every item below is Yes.</span></div>{table}"
+            f"<form class='row' method='post' action='/jobs/{j['id']}/close'>{close}</form></div>")
 
 
 JOB_SECTIONS = [_job_header, _job_status, _job_versions, _job_review, _job_numbers, _job_details, _job_documents]

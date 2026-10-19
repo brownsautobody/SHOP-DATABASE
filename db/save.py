@@ -28,19 +28,19 @@ def _mileage(result):
     return (result["header"]["vehicle"].get("mileage") or "").strip()
 
 
-def audit(s, table, row_id, action, field="", old=None, new=None, user_id=None, job_id=None):
+def audit(s, table, row_id, action, field="", old=None, new=None, user_id=None, job_id=None, note=""):
     s.add(AuditLog(table_name=table, row_id=row_id, action=action, field=field, user_id=user_id, job_id=job_id,
-                   old_value=None if old is None else str(old), new_value=None if new is None else str(new)))
+                   old_value=None if old is None else str(old), new_value=None if new is None else str(new), note=note))
 
 
-def set_field(s, obj, field, value, user_id=None, job_id=None, action="update"):
+def set_field(s, obj, field, value, user_id=None, job_id=None, action="update", note=""):
     """Change one field and log it. Returns True if it changed. action="manual" marks a value a person typed in."""
     old = getattr(obj, field)
     if old == value:
         return False
     setattr(obj, field, value)
     obj.updated_by = user_id
-    audit(s, obj.__tablename__, obj.id, action, field, old, value, user_id, job_id)
+    audit(s, obj.__tablename__, obj.id, action, field, old, value, user_id, job_id, note)
     return True
 
 
