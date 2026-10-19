@@ -45,7 +45,6 @@ def test_same_ro_one_vin_missing_is_that_job(s):
     assert upload(s, make(ro="4401", vin="", supplement_no=1)) == ("job", j)
 
 
-@pytest.mark.xfail(strict=True, reason="Step 3: same RO # but a different VIN needs a person")
 def test_same_ro_different_vin_needs_a_person(s):
     first(s, ro="4401", vin=VIN_A)
     assert upload(s, make(ro="4401", vin=VIN_B))[0] == "person"
@@ -63,14 +62,12 @@ def test_same_claim_same_vin_months_later_is_that_job(s):
     assert upload(s, make(claim="CL-1", vin=VIN_A, printed="2026-09-01T10:00:00", supplement_no=1)) == ("job", j)
 
 
-@pytest.mark.xfail(strict=True, reason="Step 3: one claim # can cover two cars - a different VIN is not this job")
 def test_same_claim_different_vin_is_a_new_job(s):
     j = first(s, claim="CL-1", vin=VIN_A)
     kind, j2 = upload(s, make(claim="CL-1", vin=VIN_B))
     assert kind == "job" and j2 != j
 
 
-@pytest.mark.xfail(strict=True, reason="Step 3: same claim # with a VIN missing needs a person")
 def test_same_claim_vin_missing_needs_a_person(s):
     first(s, claim="CL-1", vin=VIN_A)
     assert upload(s, make(claim="CL-1", vin=""))[0] == "person"
@@ -102,12 +99,20 @@ def test_same_vin_within_90_days_conflicting_claim_is_a_new_job(s):
 
 # ---------------------------------------------------------------- rule 4: more than one candidate
 
-@pytest.mark.xfail(strict=True, reason="Step 3: two candidate jobs need a person")
 def test_two_candidate_jobs_need_a_person(s):
     a = first(s, vin=VIN_A, claim="CL-1")
     b = first(s, vin=VIN_A, claim="CL-2")
     assert a != b
     assert upload(s, make(vin=VIN_A))[0] == "person"
+
+
+def test_two_jobs_with_the_same_claim_need_a_person(s):
+    from db.models import PendingUpload
+    from db.save import resolve_pending
+    first(s, claim="CL-1", vin=VIN_A)
+    assert upload(s, make(claim="CL-1", vin=""))[0] == "person"
+    resolve_pending(s, s.query(PendingUpload).one(), None)  # a person made it a new job (no VIN to compare)
+    assert upload(s, make(claim="CL-1", vin=VIN_A, supplement_no=1))[0] == "person"
 
 
 # ---------------------------------------------------------------- rule 5: no match
@@ -120,7 +125,6 @@ def test_no_match_is_a_new_job(s):
 
 # ---------------------------------------------------------------- rule 6: matched job is closed
 
-@pytest.mark.xfail(strict=True, reason="Step 3: an upload for a closed job needs a person")
 def test_closed_job_needs_a_person(s):
     from db.models import now
     j = first(s, ro="4401", vin=VIN_A)

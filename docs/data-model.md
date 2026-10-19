@@ -61,11 +61,19 @@ SQL), and the **full parse result as JSON**
 
 ### How a supplement arrives
 1. Upload a PDF -> `parse_pdf()`.
-2. Find the job (open or closed): RO# first, then claim #, then the same VIN with an estimate printed
-   within 90 days and no conflicting claim # (`find_job()` in `db/save.py`). The first estimate often prints no claim #
-   and sometimes a different RO# than the final bill; the same car back months later on a new claim is a new job.
-   None found -> new job, Open (`closed_at` empty). The job's RO# follows the newest
-   document that prints one, unless a person typed it in.
+2. Find the job - automatic when sure, a person decides when not (`match_job()` in `db/matching.py`):
+   1. same RO # -> that job, unless both estimates print a VIN and the VINs differ (-> a person);
+   2. same claim # -> that job only if both print the same VIN; both printed and different -> not this job (one
+      accident can bring two cars under one claim #), keep looking; either VIN missing -> a person;
+   3. same VIN with an estimate printed within 90 days and no conflicting claim # -> that job;
+   4. more than one candidate job at any step -> a person; 5. no match -> new job, Open;
+   6. the matched job is closed -> a person (closed jobs are locked).
+   "A person" = the upload waits in **`pending_uploads`** (stored file, parse JSON, reason `uncertain_match` |
+   `closed_job` | `duplicate_ro`, candidate job ids, created by/at, resolved by/at, resolution + the job and document
+   it became). The page shows the reason and candidate jobs with *Add to this job* / *Make a new job*; nothing is
+   saved to a job until someone chooses, then it is saved exactly as an automatic match would be (`resolve_pending()`),
+   and the choice is in `audit_log`. The job's RO# follows the newest document that prints one, unless a person
+   typed it in.
 3. Add a new `estimate_documents` row with its lines and totals. Nothing older is touched.
 4. `jobs.current_document_id` points at the newest version, chosen by `version_key()` in
    `estimate_parser/core.py`: highest `supplement_no`, then stage rank (unknown < preliminary < estimate < to_repair

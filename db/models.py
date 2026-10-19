@@ -159,6 +159,26 @@ class EstimateDocument(Tracked, Base):
     totals: Mapped[list["EstimateTotal"]] = relationship(order_by="EstimateTotal.id", cascade="all, delete-orphan")
 
 
+class PendingUpload(Tracked, Base):
+    """An uploaded estimate waiting for a person to choose its job (db/matching.py). Nothing is saved to a job until
+    someone chooses; then it is saved exactly as an automatic match would be, and the choice is kept here."""
+    __tablename__ = "pending_uploads"
+    shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id"))
+    file_id: Mapped[int] = mapped_column(ForeignKey("files.id"))
+    parse: Mapped[dict] = mapped_column(JSON)  # the parse_pdf() result, saved as is when resolved
+    parser_version: Mapped[str] = mapped_column(String(20))
+    reason: Mapped[str] = mapped_column(String(20), index=True)  # uncertain_match | closed_job | duplicate_ro
+    detail: Mapped[str] = mapped_column(String(300), default="")  # the sentence a person reads
+    candidate_job_ids: Mapped[list] = mapped_column(JSON, default=list)
+    resolved_at: Mapped[datetime | None] = mapped_column(UtcDateTime, index=True)
+    resolved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    resolution: Mapped[str] = mapped_column(String(20), default="")  # job (added to a job) | new_job
+    resolution_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"))
+    document_id: Mapped[int | None] = mapped_column(ForeignKey("estimate_documents.id"))
+
+    file: Mapped[File] = relationship()
+
+
 class EstimateLine(Base):
     """Itemized charge rows (parse_pdf()['charges']); written once with their document."""
     __tablename__ = "estimate_lines"

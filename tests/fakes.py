@@ -30,6 +30,6 @@ def make(ro="", claim="", vin="", printed="2026-09-01T10:00:00", customer="DOE, 
 
 def upload(s, result, files_dir):
     """('job', job id) when filed with a job; ('person', reason) when it waits for a person."""
-    doc, _ = save_parse(s, result, f"fake pdf {next(_n)}".encode(), files_dir)
+    saved = save_parse(s, result, f"fake pdf {next(_n)}".encode(), files_dir)
     s.flush()
-    return "job", doc.job_id
+    return ("person", saved.pending.reason) if saved.pending else ("job", saved.document.job_id)

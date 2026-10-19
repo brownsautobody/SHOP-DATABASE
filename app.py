@@ -5,12 +5,13 @@ from datetime import date, timedelta
 from flask import Flask, abort, redirect, request, send_file
 from sqlalchemy import func, or_, select
 
-from db.models import Customer, EstimateDocument, File, InsuranceCompany, Job, Vehicle, now
-from db.save import save_parse, set_field
+from db.matching import REASONS
+from db.models import Customer, EstimateDocument, File, InsuranceCompany, Job, PendingUpload, Vehicle, now
+from db.save import resolve_pending, save_parse, set_field
 from db.session import DATA_DIR, init_db, make_engine
 from db.values import day_end, day_start, local
 from estimate_parser.core import NUMBER_FIELDS, doc_file_name, doc_type_name, parse_pdf, short_model, version_key
-from estimate_parser.render import job_page, jobs_list, upload_form
+from estimate_parser.render import job_page, jobs_list, pending_list, pending_page, upload_form
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
@@ -31,9 +32,58 @@ def index():
     except Exception as e:  # show the reason instead of a stack trace
         return upload_form(f"Could not parse {f.filename}: {e}"), 422
     with Session() as s:
-        doc, is_new = save_parse(s, result, data, FILES_DIR)
+        saved = save_parse(s, result, data, FILES_DIR)
         s.commit()
-    return redirect(f"/jobs/{doc.job_id}?v={doc.id}&saved={'new' if is_new else 'dup'}")
+    if saved.pending:
+        return redirect(f"/pending/{saved.pending.id}")
+    doc = saved.document
+    return redirect(f"/jobs/{doc.job_id}?v={doc.id}&saved={'new' if saved.is_new else 'dup'}")
+
+
+def _job_summary(j):
+    return {"id": j.id, "ro": j.ro_number, "customer": j.customer.name if j.customer else "", "vehicle": _vehicle(j),
+            "vin": j.vehicle.vin if j.vehicle else "", "claim": j.claim_no, "closed": j.closed_at}
+
+
+@app.route("/pending")
+def pending():
+    with Session() as s:
+        items = [{"id": p.id, "reason": REASONS.get(p.reason, p.reason), "customer": p.parse["summary"]["customer"],
+                  "vehicle": p.parse["summary"]["vehicle"], "uploaded": p.created_at}
+                 for p in s.scalars(select(PendingUpload).where(PendingUpload.resolved_at.is_(None))
+                                    .order_by(PendingUpload.id))]
+    return pending_list(items)
+
+
+@app.route("/pending/<int:pending_id>")
+def pending_one(pending_id, error=""):
+    with Session() as s:
+        p = s.get(PendingUpload, pending_id) or abort(404)
+        m = p.parse["summary"]
+        upload = {"customer": m["customer"], "vehicle": m["vehicle"], "vin": m["vin"], "claim": m["claim"],
+                  "ro": m["ro_number"], "printed": p.parse["document"]["printed_at"], "name": p.file.original_name,
+                  "file_id": p.file_id}
+        resolved = {"when": p.resolved_at, "job_id": p.resolution_job_id, "resolution": p.resolution} if p.resolved_at else None
+        candidates = [_job_summary(j) for j in (s.get(Job, i) for i in p.candidate_job_ids) if j]
+        return pending_page({"id": p.id, "reason": REASONS.get(p.reason, p.reason), "detail": p.detail, "upload": upload,
+                             "candidates": candidates, "resolved": resolved, "error": error})
+
+
+@app.route("/pending/<int:pending_id>/resolve", methods=["POST"])
+def resolve(pending_id):
+    """A person's choice: add the waiting upload to one of the candidate jobs, or make a new job."""
+    choice = request.form.get("job_id", "")
+    with Session() as s:
+        p = s.get(PendingUpload, pending_id) or abort(404)
+        if choice != "new" and (not choice.isdigit() or int(choice) not in p.candidate_job_ids):
+            abort(400)
+        try:
+            doc = resolve_pending(s, p, None if choice == "new" else int(choice))
+        except ValueError as e:
+            s.rollback()
+            return pending_one(pending_id, str(e)), 409
+        s.commit()
+    return redirect(f"/jobs/{doc.job_id}?v={doc.id}&saved=new")
 
 
 def _vehicle(job):

@@ -36,13 +36,15 @@ def main():
                 continue
             data = f.read_bytes()
             try:
-                doc, is_new = save_parse(s, parse_pdf(str(f), f.name), data, DATA_DIR / "files")
+                saved = save_parse(s, parse_pdf(str(f), f.name), data, DATA_DIR / "files")
             except Exception as e:  # keep going; report the file
                 s.rollback()
                 print(f"  FAILED {f.name}: {e}")
                 continue
             s.commit()
-            print(f"  {'saved  ' if is_new else 'already'} {f.relative_to(folder)} -> job {doc.job_id}")
+            where = (f"waiting for a person ({saved.pending.reason}): {saved.pending.detail}" if saved.pending
+                     else f"job {saved.document.job_id}")
+            print(f"  {'saved  ' if saved.is_new else 'already'} {f.relative_to(folder)} -> {where}")
     print(f"Skipped {skipped} PDF(s) that are not estimates.")
 
 

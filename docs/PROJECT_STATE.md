@@ -35,8 +35,14 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
   customer or street name). Amounts are exact `Decimal`s read from the printed text; every sum is in Decimal.
 - **Needs review** flag when: labor hours by type or total don't match printed totals, parts/charges total doesn't
   match, history doesn't add up, document type unknown, or no print date (`review_flags()`).
-- **Job matching** (`find_job()`): RO # -> claim # -> same VIN printed within 90 days with no conflicting claim #.
-  Else a new job. Same PDF uploaded twice = one copy (sha256).
+- **Job matching - automatic when sure, a person decides when not** (`match_job()` in `db/matching.py`):
+  1. same RO # -> that job, unless both print a VIN and they differ; 2. same claim # -> that job only when both print
+  the same VIN (different VINs = another car on the claim, keep looking; a VIN missing = ask); 3. same VIN with an
+  estimate printed within 90 days and no conflicting claim # -> that job; more than one candidate -> ask; no match ->
+  new job; matched job closed -> ask. "Ask" holds the upload in `pending_uploads`: the **Waiting for a person** page
+  (`/pending`, `/pending/<id>`) shows why, the upload and the candidate jobs with **Add to this job** / **Make a new
+  job**. Nothing is filed until a person chooses; then it is saved exactly like an automatic match, and logged.
+  A closed job can't be chosen until it is reopened. Same PDF uploaded twice = one copy (sha256), also while waiting.
 - **Versions**: newest = highest supplement #, then stage (prelim < estimate < to repair < of record), then print time
   (`version_key()`). Job's RO # and customer follow the newest version unless the RO # was typed by hand.
 - **Jobs list** (`/jobs`): Open / Closed / All tabs; columns body / refinish / mech / other / total hours, labor $,
@@ -60,22 +66,26 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
     the full `parse_pdf()` result with `tests/snapshots/<sha256>.json`; a failure lists each value that changed.
     Accept changes with `python -m pytest --update-snapshots`. Snapshots hold customer data, so they're git-ignored.
     The Step 0 baseline is frozen in `data/snapshots-baseline-step0/` for comparing the whole refactor.
-  - `tests/test_matching.py` - which job an upload is filed with, from small hand-made parses (no customer data).
-    Rules still to come are marked `xfail(strict=True)`: they must fail until the step that builds them.
+  - `tests/test_matching.py` - which job an upload is filed with, from small hand-made parses (no customer data),
+    one case per rule where its two conditions disagree. `tests/test_pending.py` - the Waiting for a person pages.
+  - `tests/test_jobs_list.py`, `tests/test_values.py` - the jobs list in SQL; printed text -> typed values.
+  - `tests/fakes.py` - hand-made estimates (`make()`) and `upload()` for tests.
   - `tests/test_parser_rules.py` - parser rules on hand-made inputs (format detection, RO #, labor types, printed
     hours, exact money, Mitchell owner phone).
   - `tests/test_migrations.py` - the migrations build exactly the tables in `db/models.py`.
   - `python tests/snapshot_report.py [folder] [--detail]` - which fields changed against the snapshots (or against
     `data/snapshots-baseline-step0`), grouped by field.
 - **Schema changes are Alembic migrations** in `migrations/versions/` (0001 baseline = schema before Alembic,
-  0002 `archived_at` -> `closed_at`, 0003 typed print time / loss date / deductible + saved job numbers). Update a database with `python tools/migrate.py`: it stamps a pre-Alembic
+  0002 `archived_at` -> `closed_at`, 0003 typed print time / loss date / deductible + saved job numbers,
+  0004 `pending_uploads`). Update a database with `python tools/migrate.py`: it stamps a pre-Alembic
   database, then backs it up to `<data folder>/backups/<name>-YYYYMMDD-HHMM-before-<migration>.db` before each
   migration. A new database is created from the models and stamped; the app refuses to start on an out-of-date one.
   `tools/reparse_documents.py` also backs up first (`...-before-reparse.db`).
 
 ## Routes (`app.py`)
 `/` upload · `/jobs` list (`?status=open|closed|all&q=&start=&end=`) · `/jobs/<id>` (`?v=<doc id>`) ·
-POST `/jobs/<id>/ro`, `/jobs/<id>/close`, `/jobs/<id>/reopen` · `/files/<id>` PDF download ·
+POST `/jobs/<id>/ro`, `/jobs/<id>/close`, `/jobs/<id>/reopen` · `/pending` list, `/pending/<id>`, POST
+`/pending/<id>/resolve` (`job_id` = a candidate job or `new`) · `/files/<id>` PDF download ·
 `/documents/<id>`, `/closed`, `/archive` redirects for old links.
 
 ## Code map
@@ -87,7 +97,9 @@ POST `/jobs/<id>/ro`, `/jobs/<id>/close`, `/jobs/<id>/reopen` · `/files/<id>` P
 - `estimate_parser/render.py` - all HTML; job page = `JOB_SECTIONS` list (new feature = add a section function)
 - `db/values.py` - printed text -> typed values (`printed_time()` shop time -> UTC, `printed_date()`,
   `printed_money()`), `SHOP_TZ` (America/Chicago; `SHOP_TIMEZONE` overrides), shop-day bounds
-- `db/models.py` - tables (`UtcDateTime` column type: stored UTC, read back time-zone aware); `db/save.py` - `save_parse()`, `reparse_document()`, `find_job()`, `set_field()` (logs);
+- `db/matching.py` - `match_job()`: the matching rules, `REASONS` for a person
+- `db/models.py` - tables (`UtcDateTime` column type: stored UTC, read back time-zone aware); `db/save.py` - `save_parse()` (-> `Saved`: document or pending), `resolve_pending()`, `reparse_document()`,
+  `set_field()` (logs);
   `db/session.py` - engine, `init_db()` (new database: create + stamp; old schema: refuse); `db/migrate.py` -
   Alembic helpers, `backup()`; `migrations/` + `alembic.ini`
 - `kb/ccc_help.py` + `tools/sync_ccc_kb.py` - knowledge base sync
@@ -98,7 +110,8 @@ POST `/jobs/<id>/ro`, `/jobs/<id>/close`, `/jobs/<id>/reopen` · `/files/<id>` P
 shops, users, customers, vehicles, insurance_companies, jobs (`closed_at` = closed by a person; `loss_date` date,
 `deductible` numeric), files,
 estimate_documents (full parse JSON kept; `printed_at` UTC time; the `job_numbers()` columns body_hours ...
-grand_total), estimate_lines, estimate_totals, audit_log, kb_sources / kb_nodes /
+grand_total), pending_uploads (upload waiting for a person: file, parse, reason, candidates, resolution),
+estimate_lines, estimate_totals, audit_log, kb_sources / kb_nodes /
 kb_revisions / kb_links. Rules: nothing important overwritten or deleted; every change in `audit_log`; later
 features only add tables. Full design and future tables: `docs/data-model.md`.
 
@@ -127,6 +140,8 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 - Old branches `core-database`, `database-design`, `worktree-needs-review-flag` and a prunable worktree remain.
 
 ## Change history (newest first; add one line per commit)
+- 2026-10-19 - Refactor Step 3: matching rules (`db/matching.py`) - automatic when sure, otherwise
+  `pending_uploads` (migration 0004) and the Waiting for a person pages.
 - 2026-10-19 - Refactor Step 2: migration 0003 (printed_at UTC time, loss_date date, deductible numeric, job numbers
   saved per document); jobs list in SQL; shop time zone; CCC blank loss date no longer reads 'Days' (parser 2026.10.19b).
 - 2026-10-19 - Refactor Step 1: parser 2026.10.19 - CCC detected before Mitchell, RO # kept as printed, one labor

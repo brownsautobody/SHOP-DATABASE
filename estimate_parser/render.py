@@ -42,7 +42,8 @@ def _n(v, d=2, prefix=""):
     return "" if v is None else f"{prefix}{v:,.{d}f}"
 
 
-NAV = "<nav><b>Shop Database</b><a href='/'>Upload estimate</a><a href='/jobs'>Jobs</a></nav>"
+NAV = ("<nav><b>Shop Database</b><a href='/'>Upload estimate</a><a href='/jobs'>Jobs</a>"
+       "<a href='/pending'>Waiting for a person</a></nav>")
 
 
 def page(body, title="Shop Database"):
@@ -118,6 +119,54 @@ def jobs_list(jobs, totals, f, periods):
                 "every invoice is closed out, everything is paid and the shop's audits are done. Hours and dollars are "
                 "as printed on each job's current estimate; dates are the date that estimate was printed.</p>"
                 f"{form}<div class='tabs'>{status}</div><div class='tabs'>{quick}</div>{table}", "Jobs")
+
+
+# ---------------------------------------------------------------- uploads waiting for a person
+# ctx for pending_page: id, reason (sentence), detail, upload (dict: customer, vehicle, vin, claim, ro, printed, name,
+# file_id), candidates (dicts: id, ro, customer, vehicle, vin, claim, closed), resolved (None or dict: when, job_id,
+# resolution), error
+
+def _upload_facts(u):
+    return (f"<div class='card grid'><div><span>Customer</span>{escape(u['customer']) or '&mdash;'}</div>"
+            f"<div><span>Vehicle</span>{escape(u['vehicle']) or '&mdash;'}</div><div><span>VIN</span>{escape(u['vin']) or '&mdash;'}</div>"
+            f"<div><span>Claim #</span>{escape(u['claim']) or '&mdash;'}</div><div><span>RO #</span>{escape(u['ro']) or '&mdash;'}</div>"
+            f"<div><span>Printed</span>{_dt(u['printed']) or '&mdash;'}</div>"
+            f"<div><span>File</span><a href='/files/{u['file_id']}'>{escape(u['name'])}</a></div></div>")
+
+
+def pending_page(ctx):
+    """One upload waiting for a person: why, what it is, the candidate jobs, and the two choices."""
+    pid, err = ctx["id"], ctx.get("error")
+    head = (f"<p><a href='/pending'>&larr; Waiting for a person</a></p><h1>{escape(ctx['reason'])}</h1>"
+            f"<p class='sub'>{escape(ctx['detail'])}</p>" + (f"<div class='err'>{escape(err)}</div>" if err else ""))
+    if ctx["resolved"]:
+        r = ctx["resolved"]
+        how = "added to" if r["resolution"] == "job" else "saved as a new job,"
+        return page(head + f"<div class='note'>Filed {_dt(r['when'])}: {how} <a href='/jobs/{r['job_id']}'>job "
+                    f"{r['job_id']}</a>.</div>" + _upload_facts(ctx["upload"]), "Filed upload")
+    rows = "".join(
+        f"<tr><td><a href='/jobs/{c['id']}'>{escape(c['ro']) or '&mdash;'}</a>"
+        f"{' <span class="chip done">Closed</span>' if c['closed'] else ''}</td><td>{escape(c['customer'])}</td>"
+        f"<td>{escape(c['vehicle'])}</td><td>{escape(c['vin'])}</td><td>{escape(c['claim'])}</td><td>"
+        + (f"<a href='/jobs/{c['id']}'>Closed - reopen the job first</a>" if c["closed"] else
+           f"<form method='post' action='/pending/{pid}/resolve'><input type='hidden' name='job_id' value='{c['id']}'>"
+           "<button class='small'>Add to this job</button></form>") + "</td></tr>" for c in ctx["candidates"])
+    table = ("<h2>Possible jobs</h2><div class='wrap'><table><thead><tr><th>RO #</th><th>Customer</th><th>Vehicle</th>"
+             f"<th>VIN</th><th>Claim #</th><th></th></tr></thead><tbody>{rows}</tbody></table></div>") if rows else ""
+    new = (f"<h2>Or</h2><form method='post' action='/pending/{pid}/resolve'><input type='hidden' name='job_id' value='new'>"
+           "<button class='plain'>Make a new job</button></form>")
+    return page(head + "<h2>This upload</h2>" + _upload_facts(ctx["upload"]) + table + new
+                + "<p class='sec'>Nothing is saved to a job until you choose.</p>", "Waiting for a person")
+
+
+def pending_list(items):
+    """items: dicts id, reason, customer, vehicle, uploaded."""
+    rows = "".join(f"<tr><td><a href='/pending/{i['id']}'>{escape(i['reason'])}</a></td><td>{escape(i['customer'])}</td>"
+                   f"<td>{escape(i['vehicle'])}</td><td>{_dt(i['uploaded'])}</td></tr>" for i in items)
+    table = ("<div class='wrap'><table><thead><tr><th>Why</th><th>Customer</th><th>Vehicle</th><th>Uploaded</th></tr>"
+             f"</thead><tbody>{rows}</tbody></table></div>") if items else "<p class='sub'>Nothing is waiting.</p>"
+    return page("<h1>Waiting for a person</h1><p class='sub'>Uploaded estimates the app could not file on its own. "
+                "Open one to choose its job.</p>" + table, "Waiting for a person")
 
 
 def _d(v):

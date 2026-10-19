@@ -1,12 +1,15 @@
-"""Store a parse_pdf() result: find or create the job, keep the PDF, add a new estimate version."""
+"""Store a parse_pdf() result: find or create the job (or hold the upload for a person), keep the PDF, add a new
+estimate version."""
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy import func, select
 
 from estimate_parser.core import PARSER_VERSION, job_numbers, jsonable, version_key
+from .matching import match_job
 from .models import (AuditLog, Customer, EstimateDocument, EstimateLine, EstimateTotal, File, InsuranceCompany, Job,
-                     Shop, Vehicle)
+                     PendingUpload, Shop, Vehicle, now)
 from .values import printed_date, printed_money, printed_time
 
 # job fields filled from the estimate (where in the parse, and how printed text becomes the column's value); a value
@@ -58,31 +61,8 @@ def _customer(s, shop_id, name, phone="", user_id=None):
                           shop_id=shop_id, name=name, phone=phone, created_by=user_id) if name else None
 
 
-VIN_MATCH_DAYS = 90  # same car within this many days (by printed date) = same job, unless the claim #s differ
-
-
-def find_job(s, shop_id, ro, claim, vin="", printed=""):
-    """The job this estimate belongs to: same RO#, then same claim #, then same VIN printed within VIN_MATCH_DAYS of
-    the job's current estimate with no conflicting claim #. An estimate often prints no claim # (and sometimes a
-    different RO# than the final bill); the same car coming back months later on a new claim is a new job."""
-    jobs = select(Job).where(Job.shop_id == shop_id)
-    for cond in ((Job.ro_number == ro) if ro else None, (Job.claim_no == claim) if claim else None):
-        if cond is not None:
-            job = s.scalar(jobs.where(cond).order_by(Job.id.desc()).limit(1))
-            if job:
-                return job
-    if vin and printed:
-        when = printed_time(printed)
-        for job in s.scalars(jobs.where(Job.vehicle.has(Vehicle.vin == vin)).order_by(Job.id.desc())):
-            cur = job.current_document
-            if claim and job.claim_no and claim != job.claim_no:
-                continue
-            if cur and cur.printed_at and abs((cur.printed_at - when).days) <= VIN_MATCH_DAYS:
-                return job
-    return None
-
-
 def _store_file(s, shop_id, pdf_bytes, filename, files_dir):
+    """The PDF on disk (one copy per content) and its files row."""
     sha = hashlib.sha256(pdf_bytes).hexdigest()
     path = Path(files_dir) / sha[:2] / f"{sha}.pdf"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,16 +75,70 @@ def _store_file(s, shop_id, pdf_bytes, filename, files_dir):
     return f
 
 
+@dataclass
+class Saved:
+    """What happened to an upload: filed as `document`, or waiting for a person as `pending`. is_new False: this PDF
+    was uploaded before and nothing new was saved."""
+    document: EstimateDocument | None = None
+    pending: PendingUpload | None = None
+    is_new: bool = True
+
+
 def save_parse(s, result, pdf_bytes, files_dir, user_id=None):
-    """Save one parsed estimate. Returns (document, is_new); uploading the same PDF twice returns the first copy."""
+    """Save one parsed estimate: filed with its job when the match is sure, otherwise held in pending_uploads for a
+    person (db/matching.py). Uploading the same PDF again returns what the first upload became."""
     sha = hashlib.sha256(pdf_bytes).hexdigest()
     dup = s.scalar(select(EstimateDocument).join(File, EstimateDocument.file_id == File.id).where(File.sha256 == sha).limit(1))
     if dup:
-        return dup, False
+        return Saved(document=dup, is_new=False)
+    waiting = s.scalar(select(PendingUpload).join(File, PendingUpload.file_id == File.id)
+                       .where(File.sha256 == sha, PendingUpload.resolved_at.is_(None)).limit(1))
+    if waiting:
+        return Saved(pending=waiting, is_new=False)
 
     shop_id = s.scalar(select(Shop.id).order_by(Shop.id).limit(1))
+    m = result["summary"]
+    match = match_job(s, shop_id, m["ro_number"], m["claim"], m["vin"], result["document"]["printed_at"])
+    file = _store_file(s, shop_id, pdf_bytes, result["filename"], files_dir)
+    if match.kind == "person":
+        return Saved(pending=_hold(s, shop_id, result, file, match, user_id))
+    return Saved(document=_file_with_job(s, match.job, result, file, user_id))
+
+
+def _hold(s, shop_id, result, file, match, user_id):
+    p = PendingUpload(shop_id=shop_id, file=file, parse=jsonable(result), parser_version=PARSER_VERSION,
+                      reason=match.reason, detail=match.detail, candidate_job_ids=[j.id for j in match.candidates],
+                      created_by=user_id)
+    s.add(p)
+    s.flush()
+    audit(s, "pending_uploads", p.id, "create", "reason", None, match.reason, user_id)
+    return p
+
+
+def resolve_pending(s, pending, job_id=None, user_id=None):
+    """A person's choice for a waiting upload: add it to job `job_id`, or (None) make a new job. Saved exactly as an
+    automatic match would be. A closed job must be reopened first."""
+    if pending.resolved_at is not None:
+        raise ValueError("This upload was already filed.")
+    job = None
+    if job_id is not None:
+        job = s.get(Job, job_id)
+        if job is None:
+            raise ValueError(f"No job {job_id}.")
+        if job.closed_at is not None:
+            raise ValueError("That job is closed - reopen it first.")
+    doc = _file_with_job(s, job, pending.parse, pending.file, user_id)
+    pending.resolved_at, pending.resolved_by = now(), user_id
+    pending.resolution, pending.resolution_job_id, pending.document_id = ("job" if job else "new_job"), doc.job_id, doc.id
+    audit(s, "pending_uploads", pending.id, "resolve", "resolution", None,
+          f"{pending.resolution} {doc.job_id}", user_id, doc.job_id)
+    return doc
+
+
+def _file_with_job(s, job, result, file, user_id):
+    """Add the estimate as a new version of `job` (None: a new job made from it)."""
+    shop_id = file.shop_id
     m, h, v = result["summary"], result["header"], result["header"]["vehicle"]
-    job = find_job(s, shop_id, m["ro_number"], m["claim"], m["vin"], result["document"]["printed_at"])
     if job is None:
         customer = _customer(s, shop_id, m["customer"], h.get("phone", ""), user_id)
         vehicle = Vehicle(shop_id=shop_id, vin=v.get("vin", ""), year=v.get("year", ""), make=v.get("make", ""),
@@ -127,8 +161,9 @@ def save_parse(s, result, pdf_bytes, files_dir, user_id=None):
                 set_field(s, job, f, value, user_id, job.id)
 
     d = result["document"]
+    file.job_id = job.id
     doc = EstimateDocument(
-        job_id=job.id, file=_store_file(s, shop_id, pdf_bytes, result["filename"], files_dir), format=result["format"],
+        job_id=job.id, file=file, format=result["format"],
         title_raw=d["title_raw"], display=d["display"], stage=d["stage"], supplement_no=d["supplement_no"],
         printed_at=printed_time(d["printed_at"]), supplement_amount=d["supplement_amount"],
         needs_review=bool(result["review"]), review_reasons=result["review"], parser_version=PARSER_VERSION,
@@ -137,7 +172,7 @@ def save_parse(s, result, pdf_bytes, files_dir, user_id=None):
     s.flush()
     audit(s, "estimate_documents", doc.id, "create", new=doc.display, user_id=user_id, job_id=job.id)
     _set_current(s, job, user_id)
-    return doc, True
+    return doc
 
 
 def reparse_document(s, doc, result, user_id=None):
