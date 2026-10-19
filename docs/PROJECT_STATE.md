@@ -63,6 +63,13 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
   needs-review reasons, hours and money as printed, job details (RO # editable), documents with PDF links.
 - **Document names**: every stored PDF downloads as `LAST-RO-TYPE.pdf` (e.g. `BOATMAN-4403-PRELIM-SUPPLEMENT-1.pdf`);
   the uploaded name is kept too.
+- **Rules the database enforces**: one `files` row per PDF content (unique sha256); one job per RO # (unique where
+  not blank). Filing that would repeat an RO # goes to a person as `duplicate_ro` (`ro_conflict()` checks first; a
+  person's choice that would repeat one keeps the upload waiting); typing an RO # another job has is refused.
+- **Parse history**: every reading of a PDF is a row in `estimate_parses`; the document points at its current one
+  (`current_parse_id`; `doc.parse` reads it) and its numbers, lines and totals follow it. `tools/reparse_documents.py`
+  adds a reading for each document; on a **closed** job it is history only (numbers unchanged) and the tool prints
+  what would change. It also prints every job field a re-read changes.
 - **Change log**: every field change written to `audit_log` (create / update / manual / close / reopen / reparse) -
   not shown in the app yet.
 - **Knowledge base** (no screen): CCC ONE help center copied locally (555 articles) for reading estimates correctly;
@@ -79,6 +86,8 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
   - `tests/test_jobs_list.py`, `tests/test_values.py` - the jobs list in SQL; printed text -> typed values.
   - `tests/test_job_fields.py` - vehicles by VIN, customers by name + phone, insurance by name, fields follow the
     current version unless typed by hand.
+  - `tests/test_rules_db.py` - unique rules, duplicate RO #, parse history; `tests/test_reparse_tool.py` - the
+    re-read tool on a sample PDF (closed job kept, reopened job follows).
   - `tests/fakes.py` - hand-made estimates (`make()`) and `upload()` for tests.
   - `tests/test_parser_rules.py` - parser rules on hand-made inputs (format detection, RO #, labor types, printed
     hours, exact money, Mitchell owner phone).
@@ -87,7 +96,8 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
     `data/snapshots-baseline-step0`), grouped by field.
 - **Schema changes are Alembic migrations** in `migrations/versions/` (0001 baseline = schema before Alembic,
   0002 `archived_at` -> `closed_at`, 0003 typed print time / loss date / deductible + saved job numbers,
-  0004 `pending_uploads`, 0005 `jobs.mileage_in` copied from vehicles, `vehicles.mileage` dropped). Update a database with `python tools/migrate.py`: it stamps a pre-Alembic
+  0004 `pending_uploads`, 0005 `jobs.mileage_in` copied from vehicles, `vehicles.mileage` dropped, 0006
+  `estimate_parses` (each stored parse copied in as the first reading), unique sha256 and RO #). Update a database with `python tools/migrate.py`: it stamps a pre-Alembic
   database, then backs it up to `<data folder>/backups/<name>-YYYYMMDD-HHMM-before-<migration>.db` before each
   migration. A new database is created from the models and stamped; the app refuses to start on an out-of-date one.
   `tools/reparse_documents.py` also backs up first (`...-before-reparse.db`).
@@ -117,9 +127,10 @@ POST `/jobs/<id>/ro`, `/jobs/<id>/close`, `/jobs/<id>/reopen` · `/pending` list
   change, `--all`), `tools/reopen_jobs.py` (one-time: reopen jobs auto-filed as finished), `tools/migrate.py`
 
 ## Database (built tables)
-shops, users, customers, vehicles (shared per VIN), insurance_companies, jobs (`closed_at` = closed by a person;
-`loss_date` date, `deductible` numeric, `mileage_in`), files,
-estimate_documents (full parse JSON kept; `printed_at` UTC time; the `job_numbers()` columns body_hours ...
+shops, users, customers, vehicles (shared per VIN), insurance_companies, jobs (RO # unique when not blank;
+`closed_at` = closed by a person;
+`loss_date` date, `deductible` numeric, `mileage_in`), files (sha256 unique),
+estimate_documents (`current_parse_id` -> estimate_parses, the history of every reading; `printed_at` UTC time; the `job_numbers()` columns body_hours ...
 grand_total), pending_uploads (upload waiting for a person: file, parse, reason, candidates, resolution),
 estimate_lines, estimate_totals, audit_log, kb_sources / kb_nodes /
 kb_revisions / kb_links. Rules: nothing important overwritten or deleted; every change in `audit_log`; later
@@ -152,6 +163,8 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 - Old branches `core-database`, `database-design`, `worktree-needs-review-flag` and a prunable worktree remain.
 
 ## Change history (newest first; add one line per commit)
+- 2026-10-19 - Refactor Step 5: migration 0006 - unique files.sha256 and jobs.ro_number, `estimate_parses` history;
+  duplicate RO # -> a person; re-reads keep history and never change a closed job's numbers.
 - 2026-10-19 - Refactor Step 4: vehicles shared per VIN, mileage on the job (migration 0005), customers by name AND
   phone, insurance by normalized name, every job field follows the current version unless typed by hand.
 - 2026-10-19 - Refactor Step 3: matching rules (`db/matching.py`) - automatic when sure, otherwise

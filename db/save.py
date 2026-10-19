@@ -7,9 +7,9 @@ from pathlib import Path
 from sqlalchemy import select
 
 from estimate_parser.core import PARSER_VERSION, job_numbers, jsonable, version_key
-from .matching import match_job
-from .models import (AuditLog, Customer, EstimateDocument, EstimateLine, EstimateTotal, File, InsuranceCompany, Job,
-                     PendingUpload, Shop, Vehicle, now)
+from .matching import DUPLICATE_RO, Match, match_job
+from .models import (AuditLog, Customer, EstimateDocument, EstimateLine, EstimateParse, EstimateTotal, File,
+                     InsuranceCompany, Job, PendingUpload, Shop, Vehicle, now)
 from .values import printed_date, printed_money, printed_time
 
 # job fields that follow the job's current estimate version (where in the parse, and how printed text becomes the
@@ -105,6 +105,9 @@ def _vehicle(s, shop_id, v, user_id=None):
 def _store_file(s, shop_id, pdf_bytes, filename, files_dir):
     """The PDF on disk (one copy per content) and its files row."""
     sha = hashlib.sha256(pdf_bytes).hexdigest()
+    known = s.scalar(select(File).where(File.sha256 == sha))
+    if known:
+        return known
     path = Path(files_dir) / sha[:2] / f"{sha}.pdf"
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
@@ -141,9 +144,37 @@ def save_parse(s, result, pdf_bytes, files_dir, user_id=None):
     m = result["summary"]
     match = match_job(s, shop_id, m["ro_number"], m["claim"], m["vin"], result["document"]["printed_at"])
     file = _store_file(s, shop_id, pdf_bytes, result["filename"], files_dir)
+    if match.kind != "person" and (holder := ro_conflict(s, match.job, result)):
+        match = Match("person", reason=DUPLICATE_RO, candidates=[j for j in (match.job, holder) if j],
+                      detail=_duplicate_detail(result, holder))
     if match.kind == "person":
         return Saved(pending=_hold(s, shop_id, result, file, match, user_id))
     return Saved(document=_file_with_job(s, match.job, result, file, user_id))
+
+
+class DuplicateRO(ValueError):
+    """Filing would give two jobs the same RO #."""
+
+
+def _duplicate_detail(result, holder):
+    return (f"This estimate prints RO # {result['summary']['ro_number'].strip()}, which is already on job {holder.id}"
+            f" ({holder.customer.name if holder.customer else 'no customer'}).")
+
+
+def ro_conflict(s, job, result, replacing=None):
+    """The other job that already has the RO # that filing `result` with `job` (None: a new job) would give it -
+    or None. `replacing`: a document of the job whose parse `result` replaces (a re-read)."""
+    if job is not None and typed_by_hand(s, job, "ro_number"):
+        return None
+    versions = [(version_key({"supplement_no": d.supplement_no, "stage": d.stage, "printed_at": d.printed_at}), d.parse)
+                for d in (job.documents if job else []) if d is not replacing]
+    d = result["document"]
+    versions.append((version_key({"supplement_no": d["supplement_no"], "stage": d["stage"],
+                                  "printed_at": printed_time(d["printed_at"])}), result))
+    ro = max(versions, key=lambda v: v[0])[1]["summary"]["ro_number"].strip()
+    if not ro or (job is not None and job.ro_number == ro):
+        return None
+    return s.scalar(select(Job).where(Job.ro_number == ro, Job.id != (job.id if job else -1)).limit(1))
 
 
 def _hold(s, shop_id, result, file, match, user_id):
@@ -168,6 +199,13 @@ def resolve_pending(s, pending, job_id=None, user_id=None):
             raise ValueError(f"No job {job_id}.")
         if job.closed_at is not None:
             raise ValueError("That job is closed - reopen it first.")
+    if holder := ro_conflict(s, job, pending.parse):
+        # kept waiting, now as a duplicate RO #, with the job holding that RO # among the choices
+        set_field(s, pending, "reason", DUPLICATE_RO, user_id)
+        set_field(s, pending, "detail", _duplicate_detail(pending.parse, holder), user_id)
+        if holder.id not in pending.candidate_job_ids:
+            set_field(s, pending, "candidate_job_ids", [*pending.candidate_job_ids, holder.id], user_id)
+        raise DuplicateRO(pending.detail)
     doc = _file_with_job(s, job, pending.parse, pending.file, user_id)
     pending.resolved_at, pending.resolved_by = now(), user_id
     pending.resolution, pending.resolution_job_id, pending.document_id = ("job" if job else "new_job"), doc.job_id, doc.id
@@ -191,30 +229,48 @@ def _file_with_job(s, job, result, file, user_id):
         title_raw=d["title_raw"], display=d["display"], stage=d["stage"], supplement_no=d["supplement_no"],
         printed_at=printed_time(d["printed_at"]), supplement_amount=d["supplement_amount"],
         needs_review=bool(result["review"]), review_reasons=result["review"], parser_version=PARSER_VERSION,
-        parse=jsonable(result), created_by=user_id, lines=_lines(result), totals=_totals(result), **job_numbers(result))
+        created_by=user_id, lines=_lines(result), totals=_totals(result), **job_numbers(result))
     s.add(doc)
+    s.flush()
+    doc.current_parse = _add_parse(s, doc, result, user_id)
     s.flush()
     audit(s, "estimate_documents", doc.id, "create", new=doc.display, user_id=user_id, job_id=job.id)
     _follow_current(s, job, user_id)
     return doc
 
 
-def reparse_document(s, doc, result, user_id=None):
-    """Replace a saved document's parse with a newer one of the same PDF. Job fields (e.g. a typed RO#) are kept."""
+def _add_parse(s, doc, result, user_id):
+    p = EstimateParse(document_id=doc.id, parser_version=PARSER_VERSION, parse=jsonable(result),
+                      review_reasons=result["review"], created_by=user_id)
+    s.add(p)
+    s.flush()
+    return p
+
+
+def reparse_document(s, doc, result, user_id=None, make_current=True):
+    """A newer reading of a saved document's PDF: always added to its parse history (estimate_parses). make_current:
+    the document's fields, numbers, lines and totals follow it, and so does the job (typed-in fields are kept);
+    False: kept in history only (e.g. a closed job, whose numbers don't change). Returns the new EstimateParse.
+    Raises DuplicateRO (nothing changed) if it would give the job an RO # another job has."""
     job_id, d = doc.job_id, result["document"]
-    old_version = doc.parser_version
+    if make_current and (holder := ro_conflict(s, doc.job, result, replacing=doc)):
+        raise DuplicateRO(_duplicate_detail(result, holder))
+    p = _add_parse(s, doc, result, user_id)
+    audit(s, "estimate_parses", p.id, "create", "parser_version", doc.parser_version, PARSER_VERSION, user_id, job_id)
+    if not make_current:
+        return p
     for field, value in (("display", d["display"]), ("stage", d["stage"]), ("supplement_no", d["supplement_no"]),
                          ("printed_at", printed_time(d["printed_at"])), ("supplement_amount", d["supplement_amount"]),
                          ("needs_review", bool(result["review"])), ("review_reasons", result["review"]),
-                         ("parser_version", PARSER_VERSION), *job_numbers(result).items()):
+                         ("parser_version", PARSER_VERSION), ("current_parse_id", p.id), *job_numbers(result).items()):
         set_field(s, doc, field, value, user_id, job_id)
-    doc.parse = jsonable(result)
+    s.flush()
+    s.refresh(doc, ["current_parse"])
     doc.lines = _lines(result)
     doc.totals = _totals(result)
-    audit(s, "estimate_documents", doc.id, "reparse", "parse", old_version, PARSER_VERSION, user_id, job_id)
     s.flush()
     _follow_current(s, doc.job, user_id)
-    return doc
+    return p
 
 
 def _lines(result):
@@ -244,6 +300,9 @@ def _follow_current(s, job, user_id):
     def follow(field, value):
         if value in ("", None) or typed_by_hand(s, job, field):
             return
+        if field == "ro_number" and value != job.ro_number and s.scalar(
+                select(Job.id).where(Job.ro_number == value, Job.id != job.id).limit(1)):
+            raise DuplicateRO(f"RO # {value} is already on another job.")  # callers check first (ro_conflict)
         set_field(s, job, field, value, user_id, job.id)
 
     for f in _JOB_FIELDS:

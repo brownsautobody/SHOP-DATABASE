@@ -43,6 +43,7 @@ tables built first never change shape.
 | `insurance_companies` | name, matched with case/spacing ignored, stored as printed | `header.insurance` |
 | `jobs` | the repair order - see below | `header`, `summary` |
 | `estimate_documents` | one row per uploaded PDF, never overwritten - see below | `document`, `review` |
+| `estimate_parses` | every reading of a document's PDF: parser version, parse JSON, review reasons, when; the document points at its current one | the whole result |
 | `estimate_lines` | itemized rows: category (Part / Body Labor / Paint Labor / Sublet...), line #, operation, description, part #, part type, qty, hours, rate, amount, taxed | `charges` |
 | `estimate_totals` | printed totals rows: label, hours, rate, amount, markup/discount | `totals` |
 | `files` | any stored file linked to a job: estimate PDF, invoice, photo. File lives on disk / cloud storage; the row keeps path, type, size, uploaded by | uploaded PDF |
@@ -56,7 +57,7 @@ insurance company, `claim_no`, adjuster, estimator, loss date, deductible, `mile
 to_repair | of_record | unknown), `supplement_no` (0 = original), `printed_at`, `supplement_amount`,
 `needs_review` + `review_reasons` (from `review_flags()`), `parser_version`, the `job_numbers()` columns (body /
 refinish / mechanical / other / total hours, labor $, parts $, tax $, grand total - lists and reports sum these in
-SQL), and the **full parse result as JSON**
+SQL), and `current_parse_id` -> **`estimate_parses`**, which keeps every reading's full parse result as JSON
 (printed history table included) so old documents can be re-read if the parser improves.
 
 ### How a supplement arrives
@@ -148,6 +149,13 @@ questions; looked up with `tools/kb_search.py`.
 5. Live production page, closing a job, communication log, parts receiving (later).
 
 Each step only adds tables; nothing built earlier changes shape.
+
+## Rules the database enforces
+- `files.sha256` unique: one row per PDF content (the same PDF uploaded again returns what it became).
+- `jobs.ro_number` unique where not blank. Filing that would give two jobs the same RO # never crashes: the upload
+  waits in `pending_uploads` with reason `duplicate_ro`.
+- Re-reading a PDF (`reparse_document()`) adds an `estimate_parses` row instead of overwriting; lines and totals
+  follow the current parse. On a closed job a re-read is history only.
 
 ## What the page shows today (per document)
 - Labor by type: body, paint, mechanical, other - hours, rate, amount; total hours and amount

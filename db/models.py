@@ -2,7 +2,7 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, text
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -84,6 +84,9 @@ class InsuranceCompany(Tracked, Base):
 class Job(Tracked, Base):
     """One repair order."""
     __tablename__ = "jobs"
+    # one job per RO # (blank = not known yet); saving that would break this goes to a person (pending_uploads)
+    __table_args__ = (Index("uq_jobs_ro_number", "ro_number", unique=True, sqlite_where=text("ro_number != ''"),
+                            postgresql_where=text("ro_number != ''")),)
     shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id"))
     ro_number: Mapped[str] = mapped_column(String(20), default="", index=True)  # typed in by hand for Mitchell
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"))
@@ -123,7 +126,7 @@ class File(Tracked, Base):
     path: Mapped[str] = mapped_column(String(500))
     content_type: Mapped[str] = mapped_column(String(100), default="")
     size: Mapped[int] = mapped_column(Integer, default=0)
-    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    sha256: Mapped[str] = mapped_column(String(64), index=True, unique=True)  # one row per PDF content
 
 
 class EstimateDocument(Tracked, Base):
@@ -151,13 +154,38 @@ class EstimateDocument(Tracked, Base):
     grand_total: Mapped[Decimal | None] = mapped_column(Money)
     needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
     review_reasons: Mapped[list] = mapped_column(JSON, default=list)
-    parser_version: Mapped[str] = mapped_column(String(20))
-    parse: Mapped[dict] = mapped_column(JSON)  # full parse_pdf() result, so it can be re-read later
+    parser_version: Mapped[str] = mapped_column(String(20))  # of the current parse
+    # the reading of this PDF in use; every reading is kept in estimate_parses (rule 2)
+    current_parse_id: Mapped[int | None] = mapped_column(
+        ForeignKey("estimate_parses.id", use_alter=True, name="fk_estimate_documents_current_parse"))
 
     job: Mapped[Job] = relationship(back_populates="documents", foreign_keys=[job_id])
     file: Mapped[File | None] = relationship()
+    current_parse: Mapped["EstimateParse | None"] = relationship(foreign_keys=[current_parse_id], post_update=True)
+    parses: Mapped[list["EstimateParse"]] = relationship(foreign_keys="EstimateParse.document_id",
+                                                        order_by="EstimateParse.id", back_populates="document")
+    # lines and totals follow the current parse
     lines: Mapped[list["EstimateLine"]] = relationship(order_by="EstimateLine.id", cascade="all, delete-orphan")
     totals: Mapped[list["EstimateTotal"]] = relationship(order_by="EstimateTotal.id", cascade="all, delete-orphan")
+
+    @property
+    def parse(self):
+        """The current parse_pdf() result (as stored JSON)."""
+        return self.current_parse.parse if self.current_parse else None
+
+
+class EstimateParse(Base):
+    """One reading of an estimate PDF by one parser version. Re-reading adds a row; nothing is overwritten."""
+    __tablename__ = "estimate_parses"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("estimate_documents.id"), index=True)
+    parser_version: Mapped[str] = mapped_column(String(20))
+    parse: Mapped[dict] = mapped_column(JSON)  # full parse_pdf() result
+    review_reasons: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+
+    document: Mapped[EstimateDocument] = relationship(foreign_keys=[document_id], back_populates="parses")
 
 
 class PendingUpload(Tracked, Base):

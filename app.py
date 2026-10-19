@@ -1,13 +1,14 @@
 """Shop Database web app: python app.py, then open http://127.0.0.1:5000"""
 import io
 from datetime import date, timedelta
+from urllib.parse import quote
 
 from flask import Flask, abort, redirect, request, send_file
 from sqlalchemy import func, or_, select
 
 from db.matching import REASONS
 from db.models import Customer, EstimateDocument, File, InsuranceCompany, Job, PendingUpload, Vehicle, now
-from db.save import resolve_pending, save_parse, set_field
+from db.save import DuplicateRO, resolve_pending, save_parse, set_field
 from db.session import DATA_DIR, init_db, make_engine
 from db.values import day_end, day_start, local
 from estimate_parser.core import NUMBER_FIELDS, doc_file_name, doc_type_name, parse_pdf, short_model, version_key
@@ -79,6 +80,9 @@ def resolve(pending_id):
             abort(400)
         try:
             doc = resolve_pending(s, p, None if choice == "new" else int(choice))
+        except DuplicateRO as e:  # still waiting, now as a duplicate RO # with the job holding it among the choices
+            s.commit()
+            return pending_one(pending_id, str(e)), 409
         except ValueError as e:
             s.rollback()
             return pending_one(pending_id, str(e)), 409
@@ -184,6 +188,8 @@ def job(job_id):
         shown = next((d for d in docs if d.id == want), docs[-1] if docs else None)
         note = {"new": f"Estimate saved to this job ({len(docs)} version{'s' if len(docs) != 1 else ''}).",
                 "dup": "This PDF was already uploaded - nothing new was saved."}.get(request.args.get("saved"), "")
+        if request.args.get("ro_taken"):
+            note = f"RO # {request.args['ro_taken']} is already on job {request.args.get('on', '?')} - not saved."
         return job_page({"job": info, "versions": versions, "note": note,
                          "shown": next((v for v in versions if shown and v["id"] == shown.id), None),
                          "summary": shown.parse["summary"] if shown else None})
@@ -193,7 +199,10 @@ def job(job_id):
 def set_ro(job_id):
     with Session() as s:
         j = s.get(Job, job_id) or abort(404)
-        set_field(s, j, "ro_number", request.form.get("ro", "").strip(), job_id=j.id, action="manual")
+        ro = request.form.get("ro", "").strip()
+        if ro and (other := s.scalar(select(Job.id).where(Job.ro_number == ro, Job.id != j.id).limit(1))):
+            return redirect(f"/jobs/{job_id}?ro_taken={quote(ro)}&on={other}")
+        set_field(s, j, "ro_number", ro, job_id=j.id, action="manual")
         s.commit()
     return redirect(f"/jobs/{job_id}")
 
