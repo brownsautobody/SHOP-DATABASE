@@ -8,6 +8,7 @@ sys.path.insert(0, str(ROOT))
 
 from sqlalchemy import select  # noqa: E402
 
+from db import migrate  # noqa: E402
 from db.models import EstimateDocument  # noqa: E402
 from db.save import reparse_document  # noqa: E402
 from db.session import DATABASE_URL, init_db, make_engine  # noqa: E402
@@ -15,6 +16,8 @@ from estimate_parser.core import PARSER_VERSION, parse_pdf  # noqa: E402
 
 if __name__ == "__main__":
     print("Database:", DATABASE_URL)
+    copy = migrate.backup(DATABASE_URL, "reparse")
+    print("Backup:", copy or "not SQLite - take a backup (pg_dump) first")
     with init_db(make_engine())() as s:
         docs = select(EstimateDocument)
         if "--all" not in sys.argv:

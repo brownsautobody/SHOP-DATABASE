@@ -9,6 +9,13 @@ Every commit that changes features, pages, routes, tables, tools, data notes or 
 hook in `.git/hooks/pre-commit` refuses a commit that changes code without staging that file;
 `git commit --no-verify` skips it for a commit that really changes nothing worth noting.
 
+## Tests and schema
+- `python -m pytest` (from WSL: `python.exe -m pytest` - packages are in the Windows Python, and stored file paths
+  are Windows paths). Parser changes show up as snapshot diffs; accept with `--update-snapshots` only after
+  explaining every diff.
+- A schema change = a new migration in `migrations/versions/` (`tests/test_migrations.py` fails otherwise). Update a
+  database with `python tools/migrate.py` (backs up first).
+
 ## Ground rules from the project
 - The parser keeps only what the PDF prints - never calculate or fill in values.
 - Nothing important is overwritten or deleted; every field change goes through `set_field()` so it lands in `audit_log`.

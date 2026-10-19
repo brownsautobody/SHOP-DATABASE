@@ -4,7 +4,7 @@ The current picture of the project in one page: what works, how it fits together
 **Update this file in the same commit as any change to features, pages, tables, tools or plans** (a git hook checks).
 Read this first instead of re-reading the code; open the files named here only when you need the detail.
 
-Last updated: 2026-10-16
+Last updated: 2026-10-19 (branch `refactor-foundation`, working through `REFACTOR_PROMPT.md` step by step)
 
 ## What it is
 Brown's Body Shop's job database. Upload a CCC ONE or Mitchell estimate PDF -> it's read, checked against its own
@@ -47,6 +47,21 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
 - **Knowledge base** (no screen): CCC ONE help center copied locally (555 articles) for reading estimates correctly;
   `tools/kb_search.py <words>`, `--show <id>`, `--tree`.
 
+## Tests and database changes
+- **Run the tests:** `python -m pytest` (from WSL use `python.exe -m pytest`; packages live in the Windows Python).
+  - `tests/test_parser_snapshots.py` parses every PDF in `samples/` and `data/test2026/files/` (68 today) and compares
+    the full `parse_pdf()` result with `tests/snapshots/<sha256>.json`; a failure lists each value that changed.
+    Accept changes with `python -m pytest --update-snapshots`. Snapshots hold customer data, so they're git-ignored.
+    The Step 0 baseline is frozen in `data/snapshots-baseline-step0/` for comparing the whole refactor.
+  - `tests/test_matching.py` - which job an upload is filed with, from small hand-made parses (no customer data).
+    Rules still to come are marked `xfail(strict=True)`: they must fail until the step that builds them.
+  - `tests/test_migrations.py` - the migrations build exactly the tables in `db/models.py`.
+- **Schema changes are Alembic migrations** in `migrations/versions/` (0001 baseline = schema before Alembic,
+  0002 `archived_at` -> `closed_at`). Update a database with `python tools/migrate.py`: it stamps a pre-Alembic
+  database, then backs it up to `<data folder>/backups/<name>-YYYYMMDD-HHMM-before-<migration>.db` before each
+  migration. A new database is created from the models and stamped; the app refuses to start on an out-of-date one.
+  `tools/reparse_documents.py` also backs up first (`...-before-reparse.db`).
+
 ## Routes (`app.py`)
 `/` upload · `/jobs` list (`?status=open|closed|all&q=&start=&end=`) · `/jobs/<id>` (`?v=<doc id>`) ·
 POST `/jobs/<id>/ro`, `/jobs/<id>/close`, `/jobs/<id>/reopen` · `/files/<id>` PDF download ·
@@ -59,10 +74,11 @@ POST `/jobs/<id>/ro`, `/jobs/<id>/close`, `/jobs/<id>/reopen` · `/files/<id>` P
 - `estimate_parser/pdfutil.py` - PDF rows / number helpers
 - `estimate_parser/render.py` - all HTML; job page = `JOB_SECTIONS` list (new feature = add a section function)
 - `db/models.py` - tables; `db/save.py` - `save_parse()`, `reparse_document()`, `find_job()`, `set_field()` (logs);
-  `db/session.py` - engine, `init_db()` creates missing tables + small one-off column renames (no Alembic yet)
+  `db/session.py` - engine, `init_db()` (new database: create + stamp; old schema: refuse); `db/migrate.py` -
+  Alembic helpers, `backup()`; `migrations/` + `alembic.ini`
 - `kb/ccc_help.py` + `tools/sync_ccc_kb.py` - knowledge base sync
 - `tools/load_samples.py` (load `samples/` into a DB), `tools/reparse_documents.py` (re-read saved PDFs after a parser
-  change, `--all`), `tools/reopen_jobs.py` (one-time: reopen jobs auto-filed as finished)
+  change, `--all`), `tools/reopen_jobs.py` (one-time: reopen jobs auto-filed as finished), `tools/migrate.py`
 
 ## Database (built tables)
 shops, users, customers, vehicles, insurance_companies, jobs (`closed_at` = closed by a person), files,
@@ -72,15 +88,19 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 
 ## Data on this machine (git-ignored, customer data)
 - `data/shop.db` - real database: 2 jobs, 2 documents (parser 2026.10.14), knowledge base loaded.
-- `data/test2026/shop.db` - test copy of 54 real 2026 CCC estimates / 41 jobs, still on parser 2026.10.13b and the
-  old `archived_at` column (renamed automatically on next start; run `tools/reparse_documents.py` to update parses).
-- `data/test/` - older sample test copy. `samples/` - sample PDFs.
+- `data/test2026/shop.db` - test copy of 54 real 2026 CCC estimates / 41 jobs (all closed - they were filed as
+  archived), still on parser 2026.10.13b. Migrated to 0002 on 2026-10-19 (backup in `data/test2026/backups/`).
+- `data/test/` - older sample test copy (migrated to 0002). `samples/` - sample PDFs (12 CCC, 2 Mitchell).
+- To use a test copy: `SHOP_DATA_DIR=data\test2026` (Windows `set SHOP_DATA_DIR=data\test2026`; from WSL also
+  `WSLENV=SHOP_DATA_DIR`). Stored file paths are Windows paths, so run the tools with the Windows Python.
 
 ## Known gaps / to-dos
-- No automated tests; checking is done by loading real PDFs and watching for "Needs review".
 - No login; `created_by` / `user_id` always empty.
 - Close job has no checklist yet (planned: Final bill sent / All payments received / Audits done gate it).
-- Schema changes are hand-written in `init_db()`; add Alembic before PostgreSQL.
+- Migration 0001 is SQLite-shaped (jobs <-> estimate_documents and shops <-> users point at each other); check it
+  before the first PostgreSQL database.
+- Leftover production-board tables (`production_stages`, `job_assignments`, `job_stage_events`) sit in `data/shop.db`
+  and `data/test/`; migrations leave them alone.
 - Job list loads every job and filters in Python - fine at this size.
 - `Job.current_stage_id`, `dropped_off_at`, `promised_at`, `delivered_at` exist but nothing uses them.
 - README's test-database command is broken: `set SHOP_DATA_DIR=data<TAB>est` should be `data\test`.
@@ -90,6 +110,8 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 - Old branches `core-database`, `database-design`, `worktree-needs-review-flag` and a prunable worktree remain.
 
 ## Change history (newest first; add one line per commit)
+- 2026-10-19 - Refactor Step 0: pytest snapshot + matching + migration tests, Alembic (0001 baseline, 0002 rename),
+  `tools/migrate.py` with backups, backup before reparse.
 - 2026-10-16 - Open / Closed jobs: Close / Reopen button, list tabs, `archived_at` -> `closed_at`; customer = vehicle
   owner (CCC); multi-line CCC notes; parser 2026.10.14; `tools/reopen_jobs.py`, `tools/reparse_documents.py`; added this file + CLAUDE.md + pre-commit check.
 - d52e757 - Every stored document named LAST-RO-TYPE.pdf.

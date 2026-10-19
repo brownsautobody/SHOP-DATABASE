@@ -2,7 +2,7 @@
 import os
 from pathlib import Path
 
-from sqlalchemy import create_engine, event, inspect, select, text
+from sqlalchemy import create_engine, event, inspect, select
 from sqlalchemy.orm import sessionmaker
 
 from .models import Base, Shop
@@ -23,12 +23,22 @@ def make_engine(url=DATABASE_URL):
     return engine
 
 
+class NeedsMigration(RuntimeError):
+    pass
+
+
 def init_db(engine):
-    """Create any missing tables and the one shop row. Returns a session factory."""
-    Base.metadata.create_all(engine)
-    if "archived_at" in {c["name"] for c in inspect(engine).get_columns("jobs")}:  # older databases
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE jobs RENAME COLUMN archived_at TO closed_at"))
+    """A new database gets every table and is stamped at the newest migration; an existing one must already be at
+    the newest migration (python tools/migrate.py backs it up and updates it). Adds the one shop row. Returns a
+    session factory."""
+    from . import migrate
+    url = engine.url.render_as_string(hide_password=False)
+    if "jobs" not in inspect(engine).get_table_names():
+        Base.metadata.create_all(engine)
+        migrate.stamp(url, "head")
+    elif migrate.current(engine) != migrate.head(url):
+        raise NeedsMigration(f"The database ({url}) is on an older schema. Back it up and update it with: "
+                             "python tools/migrate.py")
     Session = sessionmaker(engine, expire_on_commit=False)
     with Session() as s:
         if s.scalar(select(Shop.id).limit(1)) is None:

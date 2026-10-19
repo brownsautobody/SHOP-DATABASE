@@ -6,3 +6,7 @@ __pycache__/
 
 # Saved database and uploaded PDFs (customer data)
 data/
+
+# Parser snapshots hold customer data, like samples/
+tests/snapshots/
+.pytest_cache/

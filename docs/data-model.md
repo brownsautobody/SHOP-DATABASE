@@ -1,7 +1,7 @@
 # Database design
 
-**Status:** core tables are built (`db/models.py`). Tables for the later features are still on paper. Until
-Alembic migrations are added (before moving to PostgreSQL), missing tables are created at startup by `init_db()`.
+**Status:** core tables are built (`db/models.py`). Tables for the later features are still on paper. Every schema
+change is an Alembic migration (`migrations/versions/`), run by `python tools/migrate.py` after a backup copy.
 
 Goal: one database that holds every job from the first estimate until it is closed, and that the future web app
 (admin page + live production page) can grow on **without rebuilding what already exists**. Features that come later
