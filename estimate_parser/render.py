@@ -243,7 +243,8 @@ def _job_details(ctx):
           f"maxlength='20' aria-label='RO #'><button class='small'>Save</button></form>")
     loss = j["loss_date"]
     fields = [("VIN", j["vin"]), ("Adjuster", j["adjuster"]), ("Estimator on estimate", j["estimator"]),
-              ("Deductible", _n(j["deductible"], 2, "$")), ("Loss date", f"{loss.month}/{loss.day}/{loss.year}" if loss else "")]
+              ("Deductible", _n(j["deductible"], 2, "$")), ("Loss date", f"{loss.month}/{loss.day}/{loss.year}" if loss else ""),
+              ("Mileage in", j["mileage"])]
     info = "".join(f"<div><span>{escape(k)}</span>{escape(str(v)) or '&mdash;'}</div>" for k, v in fields)
     return f"<h2>Job details</h2><div class='card'><div class='grid'><div><span>RO #</span>{ro}</div>{info}</div></div>"
 

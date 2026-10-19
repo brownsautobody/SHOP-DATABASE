@@ -65,6 +65,7 @@ class Customer(Tracked, Base):
 
 
 class Vehicle(Tracked, Base):
+    """One car, shared by every job on the same VIN (mileage belongs to each job: jobs.mileage_in)."""
     __tablename__ = "vehicles"
     shop_id: Mapped[int] = mapped_column(ForeignKey("shops.id"))
     vin: Mapped[str] = mapped_column(String(17), default="", index=True)
@@ -72,7 +73,6 @@ class Vehicle(Tracked, Base):
     make: Mapped[str] = mapped_column(String(60), default="")
     model: Mapped[str] = mapped_column(String(120), default="")
     description: Mapped[str] = mapped_column(String(250), default="")
-    mileage: Mapped[str] = mapped_column(String(20), default="")
 
 
 class InsuranceCompany(Tracked, Base):
@@ -94,6 +94,7 @@ class Job(Tracked, Base):
     estimator: Mapped[str] = mapped_column(String(120), default="")
     loss_date: Mapped[date | None] = mapped_column(Date)  # as printed; the text stays in the estimate's parse
     deductible: Mapped[Decimal | None] = mapped_column(Money)
+    mileage_in: Mapped[str] = mapped_column(String(20), default="")  # as printed on the current estimate
     # use_alter: jobs <-> estimate_documents point at each other
     current_document_id: Mapped[int | None] = mapped_column(
         ForeignKey("estimate_documents.id", use_alter=True, name="fk_jobs_current_document"))

@@ -172,7 +172,8 @@ def job(job_id):
         info = {"id": j.id, "ro": j.ro_number, "customer": j.customer.name if j.customer else "", "vehicle": _vehicle(j),
                 "vin": j.vehicle.vin if j.vehicle else "", "insurance": j.insurance.name if j.insurance else "",
                 "claim": j.claim_no, "adjuster": j.adjuster, "estimator": j.estimator, "deductible": j.deductible,
-                "loss_date": j.loss_date, "current_id": j.current_document_id, "closed": j.closed_at}
+                "loss_date": j.loss_date, "mileage": j.mileage_in, "current_id": j.current_document_id,
+                "closed": j.closed_at}
         docs = sorted(j.documents, key=lambda d: version_key(
             {"supplement_no": d.supplement_no, "stage": d.stage, "printed_at": d.printed_at}))
         names = doc_names(j)

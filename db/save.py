@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from estimate_parser.core import PARSER_VERSION, job_numbers, jsonable, version_key
 from .matching import match_job
@@ -12,16 +12,20 @@ from .models import (AuditLog, Customer, EstimateDocument, EstimateLine, Estimat
                      PendingUpload, Shop, Vehicle, now)
 from .values import printed_date, printed_money, printed_time
 
-# job fields filled from the estimate (where in the parse, and how printed text becomes the column's value); a value
-# already on the job (e.g. typed in by hand) is never overwritten
-_JOB_FIELDS = {"ro_number": ("summary", "ro_number", str), "claim_no": ("summary", "claim", str),
-               "adjuster": ("header", "adjuster", str), "estimator": ("header", "estimator", str),
+# job fields that follow the job's current estimate version (where in the parse, and how printed text becomes the
+# column's value); customer, insurance company and vehicle follow it too (_follow_current)
+_JOB_FIELDS = {"ro_number": ("summary", "ro_number", str.strip), "claim_no": ("summary", "claim", str.strip),
+               "adjuster": ("header", "adjuster", str.strip), "estimator": ("header", "estimator", str.strip),
                "loss_date": ("header", "loss_date", printed_date), "deductible": ("header", "deductible", printed_money)}
 
 
 def _job_value(result, field):
     src, key, convert = _JOB_FIELDS[field]
     return convert(result[src].get(key) or "")
+
+
+def _mileage(result):
+    return (result["header"]["vehicle"].get("mileage") or "").strip()
 
 
 def audit(s, table, row_id, action, field="", old=None, new=None, user_id=None, job_id=None):
@@ -46,19 +50,56 @@ def typed_by_hand(s, job, field):
                                               AuditLog.field == field, AuditLog.action == "manual").limit(1)) is not None
 
 
-def _get_or_create(s, model, where, **values):
-    row = s.scalar(select(model).where(*where).limit(1))
-    if row is None:
-        row = model(**values)
-        s.add(row)
-        s.flush()
-    return row
+def same_name(a, b):
+    """Names compared with case and spacing ignored."""
+    return " ".join((a or "").split()).casefold() == " ".join((b or "").split()).casefold()
+
+
+def digits(phone):
+    return "".join(ch for ch in phone or "" if ch.isdigit())
 
 
 def _customer(s, shop_id, name, phone="", user_id=None):
+    """The customer with this name AND phone (digits only); either missing a phone -> a new customer. Never matched on
+    name alone: two different people can share a name. Existing customer rows are never merged or changed."""
     name = name.strip()
-    return _get_or_create(s, Customer, [Customer.shop_id == shop_id, func.lower(Customer.name) == name.lower()],
-                          shop_id=shop_id, name=name, phone=phone, created_by=user_id) if name else None
+    if not name:
+        return None
+    if digits(phone):
+        for c in s.scalars(select(Customer).where(Customer.shop_id == shop_id, Customer.phone != "").order_by(Customer.id)):
+            if same_name(c.name, name) and digits(c.phone) == digits(phone):
+                return c
+    c = Customer(shop_id=shop_id, name=name, phone=phone, created_by=user_id)
+    s.add(c)
+    s.flush()
+    return c
+
+
+def _insurance(s, shop_id, name, user_id=None):
+    """Insurance company by name, case and spacing ignored; a new one is stored as printed."""
+    name = name.strip()
+    if not name:
+        return None
+    for c in s.scalars(select(InsuranceCompany).where(InsuranceCompany.shop_id == shop_id).order_by(InsuranceCompany.id)):
+        if same_name(c.name, name):
+            return c
+    c = InsuranceCompany(shop_id=shop_id, name=name, created_by=user_id)
+    s.add(c)
+    s.flush()
+    return c
+
+
+def _vehicle(s, shop_id, v, user_id=None):
+    """The vehicle with this VIN (the oldest record, if an older database holds several); no VIN -> a new record."""
+    vin = (v.get("vin") or "").strip()
+    found = s.scalar(select(Vehicle).where(Vehicle.shop_id == shop_id, Vehicle.vin == vin).order_by(Vehicle.id).limit(1)) if vin else None
+    if found:
+        return found
+    found = Vehicle(shop_id=shop_id, vin=vin, year=v.get("year", ""), make=v.get("make", ""), model=v.get("model", ""),
+                    description=v.get("description", ""), created_by=user_id)
+    s.add(found)
+    s.flush()
+    return found
 
 
 def _store_file(s, shop_id, pdf_bytes, filename, files_dir):
@@ -137,28 +178,11 @@ def resolve_pending(s, pending, job_id=None, user_id=None):
 
 def _file_with_job(s, job, result, file, user_id):
     """Add the estimate as a new version of `job` (None: a new job made from it)."""
-    shop_id = file.shop_id
-    m, h, v = result["summary"], result["header"], result["header"]["vehicle"]
-    if job is None:
-        customer = _customer(s, shop_id, m["customer"], h.get("phone", ""), user_id)
-        vehicle = Vehicle(shop_id=shop_id, vin=v.get("vin", ""), year=v.get("year", ""), make=v.get("make", ""),
-                          model=v.get("model", ""), description=v.get("description", ""), mileage=v.get("mileage", ""),
-                          created_by=user_id)
-        s.add(vehicle)
-        ins = m["insurance"].strip()
-        insurance = _get_or_create(s, InsuranceCompany, [InsuranceCompany.shop_id == shop_id,
-                                                          func.lower(InsuranceCompany.name) == ins.lower()],
-                                   shop_id=shop_id, name=ins, created_by=user_id) if ins else None
-        job = Job(shop_id=shop_id, customer=customer, vehicle=vehicle, insurance=insurance, created_by=user_id,
-                  **{f: _job_value(result, f) for f in _JOB_FIELDS})
+    if job is None:  # its fields are filled from this estimate by _follow_current, like any job's
+        job = Job(shop_id=file.shop_id, created_by=user_id)
         s.add(job)
         s.flush()
         audit(s, "jobs", job.id, "create", user_id=user_id, job_id=job.id)
-    else:
-        for f in _JOB_FIELDS:
-            value = _job_value(result, f)
-            if getattr(job, f) in ("", None) and value not in ("", None):
-                set_field(s, job, f, value, user_id, job.id)
 
     d = result["document"]
     file.job_id = job.id
@@ -171,7 +195,7 @@ def _file_with_job(s, job, result, file, user_id):
     s.add(doc)
     s.flush()
     audit(s, "estimate_documents", doc.id, "create", new=doc.display, user_id=user_id, job_id=job.id)
-    _set_current(s, job, user_id)
+    _follow_current(s, job, user_id)
     return doc
 
 
@@ -189,7 +213,7 @@ def reparse_document(s, doc, result, user_id=None):
     doc.totals = _totals(result)
     audit(s, "estimate_documents", doc.id, "reparse", "parse", old_version, PARSER_VERSION, user_id, job_id)
     s.flush()
-    _set_current(s, doc.job, user_id)
+    _follow_current(s, doc.job, user_id)
     return doc
 
 
@@ -207,19 +231,33 @@ def _totals(result):
             for t in result["totals"]]
 
 
-def _set_current(s, job, user_id):
-    """Point the job at its newest estimate version. The job's RO# follows the newest version that prints one (the
-    final bill can print a different RO# than the first estimate) unless a person typed the RO# in."""
+def _follow_current(s, job, user_id):
+    """Point the job at its newest estimate version, and make the job's fields follow that version: RO #, claim #,
+    adjuster, estimator, loss date, deductible, mileage in, customer, insurance company and vehicle - except a field a
+    person typed in by hand. A value the current version doesn't print keeps what the job has. Every change is logged."""
     s.refresh(job, ["documents"])
-    by_age = sorted(job.documents, key=lambda x: version_key(
-        {"supplement_no": x.supplement_no, "stage": x.stage, "printed_at": x.printed_at}), reverse=True)
-    set_field(s, job, "current_document_id", by_age[0].id, user_id, job.id)
-    ro = next((d.parse["summary"]["ro_number"] for d in by_age if d.parse["summary"]["ro_number"]), "")
-    if ro and ro != job.ro_number and not typed_by_hand(s, job, "ro_number"):
-        set_field(s, job, "ro_number", ro, user_id, job.id)
-    # the customer (vehicle owner) follows the newest version too, e.g. after a re-read corrects who the owner is
-    name = by_age[0].parse["summary"]["customer"].strip()
-    if name and (not job.customer or job.customer.name.lower() != name.lower()):
-        set_field(s, job, "customer_id", _customer(s, job.shop_id, name, by_age[0].parse["header"].get("phone", ""), user_id).id,
-                  user_id, job.id)
-        s.refresh(job, ["customer"])
+    cur = max(job.documents, key=lambda x: version_key(
+        {"supplement_no": x.supplement_no, "stage": x.stage, "printed_at": x.printed_at}))
+    set_field(s, job, "current_document_id", cur.id, user_id, job.id)
+    r, shop_id = cur.parse, job.shop_id
+
+    def follow(field, value):
+        if value in ("", None) or typed_by_hand(s, job, field):
+            return
+        set_field(s, job, field, value, user_id, job.id)
+
+    for f in _JOB_FIELDS:
+        follow(f, _job_value(r, f))
+    follow("mileage_in", _mileage(r))
+    name, phone = r["summary"]["customer"].strip(), (r["header"].get("phone") or "").strip()
+    c = job.customer
+    if name and not (c and same_name(c.name, name) and (not digits(phone) or digits(c.phone) == digits(phone))):
+        follow("customer_id", _customer(s, shop_id, name, phone, user_id).id)
+    ins = r["summary"]["insurance"].strip()
+    if ins and not (job.insurance and same_name(job.insurance.name, ins)):
+        follow("insurance_id", _insurance(s, shop_id, ins, user_id).id)
+    v = r["header"]["vehicle"]
+    if (v.get("vin") or "").strip() or job.vehicle_id is None:
+        follow("vehicle_id", _vehicle(s, shop_id, v, user_id).id)
+    s.flush()
+    s.refresh(job, ["customer", "insurance", "vehicle"])

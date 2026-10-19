@@ -44,7 +44,15 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
   job**. Nothing is filed until a person chooses; then it is saved exactly like an automatic match, and logged.
   A closed job can't be chosen until it is reopened. Same PDF uploaded twice = one copy (sha256), also while waiting.
 - **Versions**: newest = highest supplement #, then stage (prelim < estimate < to repair < of record), then print time
-  (`version_key()`). Job's RO # and customer follow the newest version unless the RO # was typed by hand.
+  (`version_key()`).
+- **Job fields - one rule** (`_follow_current()` in `db/save.py`): RO #, claim #, adjuster, estimator, loss date,
+  deductible, mileage in, customer, insurance company and vehicle follow the job's current version, unless a person
+  typed the field in by hand (`typed_by_hand()`: any field set with action `manual`). A value the current version
+  doesn't print keeps the job's. Every change goes through `set_field()`.
+- **Vehicles** are shared by every job on the same VIN (no VIN -> a new record); mileage is per job (`mileage_in`).
+  **Customers** are the same only when name (case/spacing ignored) AND phone (digits) match - never on name alone;
+  a missing phone means a new customer (a supplement of the same job with the same name keeps the job's customer).
+  **Insurance companies** match by name, case/spacing ignored, stored as printed. Existing rows are never merged.
 - **Jobs list** (`/jobs`): Open / Closed / All tabs; columns body / refinish / mech / other / total hours, labor $,
   parts $, tax $, grand total + totals row; search RO #, customer, VIN, claim #, insurance; date filter on estimate
   print date in the shop's time zone (range, This month / Last month / This year). Numbers come only from
@@ -69,6 +77,8 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
   - `tests/test_matching.py` - which job an upload is filed with, from small hand-made parses (no customer data),
     one case per rule where its two conditions disagree. `tests/test_pending.py` - the Waiting for a person pages.
   - `tests/test_jobs_list.py`, `tests/test_values.py` - the jobs list in SQL; printed text -> typed values.
+  - `tests/test_job_fields.py` - vehicles by VIN, customers by name + phone, insurance by name, fields follow the
+    current version unless typed by hand.
   - `tests/fakes.py` - hand-made estimates (`make()`) and `upload()` for tests.
   - `tests/test_parser_rules.py` - parser rules on hand-made inputs (format detection, RO #, labor types, printed
     hours, exact money, Mitchell owner phone).
@@ -77,7 +87,7 @@ Stack: Python, pdfplumber, Flask (HTML built in Python, no templates), SQLAlchem
     `data/snapshots-baseline-step0`), grouped by field.
 - **Schema changes are Alembic migrations** in `migrations/versions/` (0001 baseline = schema before Alembic,
   0002 `archived_at` -> `closed_at`, 0003 typed print time / loss date / deductible + saved job numbers,
-  0004 `pending_uploads`). Update a database with `python tools/migrate.py`: it stamps a pre-Alembic
+  0004 `pending_uploads`, 0005 `jobs.mileage_in` copied from vehicles, `vehicles.mileage` dropped). Update a database with `python tools/migrate.py`: it stamps a pre-Alembic
   database, then backs it up to `<data folder>/backups/<name>-YYYYMMDD-HHMM-before-<migration>.db` before each
   migration. A new database is created from the models and stamped; the app refuses to start on an out-of-date one.
   `tools/reparse_documents.py` also backs up first (`...-before-reparse.db`).
@@ -107,8 +117,8 @@ POST `/jobs/<id>/ro`, `/jobs/<id>/close`, `/jobs/<id>/reopen` · `/pending` list
   change, `--all`), `tools/reopen_jobs.py` (one-time: reopen jobs auto-filed as finished), `tools/migrate.py`
 
 ## Database (built tables)
-shops, users, customers, vehicles, insurance_companies, jobs (`closed_at` = closed by a person; `loss_date` date,
-`deductible` numeric), files,
+shops, users, customers, vehicles (shared per VIN), insurance_companies, jobs (`closed_at` = closed by a person;
+`loss_date` date, `deductible` numeric, `mileage_in`), files,
 estimate_documents (full parse JSON kept; `printed_at` UTC time; the `job_numbers()` columns body_hours ...
 grand_total), pending_uploads (upload waiting for a person: file, parse, reason, candidates, resolution),
 estimate_lines, estimate_totals, audit_log, kb_sources / kb_nodes /
@@ -137,9 +147,13 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 - Line endings: files are CRLF (Windows). Git under WSL shows every line changed - use Windows git, or set
   `core.autocrlf=true` in the WSL git config before committing from WSL.
 - Python packages are installed on Windows only, not in WSL.
+- `data/test2026` holds one VIN on two vehicle rows (two jobs, from before vehicles were shared); new uploads use the
+  oldest. A merge tool for customers / vehicles would come later - nothing merges automatically.
 - Old branches `core-database`, `database-design`, `worktree-needs-review-flag` and a prunable worktree remain.
 
 ## Change history (newest first; add one line per commit)
+- 2026-10-19 - Refactor Step 4: vehicles shared per VIN, mileage on the job (migration 0005), customers by name AND
+  phone, insurance by normalized name, every job field follows the current version unless typed by hand.
 - 2026-10-19 - Refactor Step 3: matching rules (`db/matching.py`) - automatic when sure, otherwise
   `pending_uploads` (migration 0004) and the Waiting for a person pages.
 - 2026-10-19 - Refactor Step 2: migration 0003 (printed_at UTC time, loss_date date, deductible numeric, job numbers

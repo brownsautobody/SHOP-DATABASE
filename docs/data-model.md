@@ -38,9 +38,9 @@ tables built first never change shape.
 |---|---|---|
 | `shops` | shop name, address | - |
 | `users` | employee name, login, role (admin, front office, body tech, painter, parts...), active | - |
-| `customers` | name, phones, email | `header.customer`, phones |
-| `vehicles` | VIN, year, make, model, full description, mileage | `header.vehicle` |
-| `insurance_companies` | name | `header.insurance` |
+| `customers` | name, phones, email - the same customer only when name (case/spacing ignored) AND phone (digits) match; never merged automatically | `header.customer`, phones |
+| `vehicles` | VIN, year, make, model, full description - one row per VIN, shared by its jobs | `header.vehicle` |
+| `insurance_companies` | name, matched with case/spacing ignored, stored as printed | `header.insurance` |
 | `jobs` | the repair order - see below | `header`, `summary` |
 | `estimate_documents` | one row per uploaded PDF, never overwritten - see below | `document`, `review` |
 | `estimate_lines` | itemized rows: category (Part / Body Labor / Paint Labor / Sublet...), line #, operation, description, part #, part type, qty, hours, rate, amount, taxed | `charges` |
@@ -49,7 +49,7 @@ tables built first never change shape.
 | `audit_log` | every edit (rule 4) | - |
 
 **`jobs`** - `ro_number` (CCC prints it; Mitchell doesn't, so it is **typed in by hand**), customer, vehicle,
-insurance company, `claim_no`, adjuster, estimator, loss date, deductible, `current_document_id`,
+insurance company, `claim_no`, adjuster, estimator, loss date, deductible, `mileage_in`, `current_document_id`,
 `current_stage_id`, key dates `dropped_off_at`, `promised_at`, `delivered_at`, `closed_at` (set by a person, see Closing a job).
 
 **`estimate_documents`** - job, file, `format` (CCC ONE | Mitchell), `title_raw`, `stage` (preliminary | estimate |
@@ -79,6 +79,9 @@ SQL), and the **full parse result as JSON**
    `estimate_parser/core.py`: highest `supplement_no`, then stage rank (unknown < preliminary < estimate < to_repair
    < of_record), then `printed_at`. CCC and Mitchell totals are cumulative, so the newest document holds the whole
    job's numbers; older ones stay as history (what changed, profitability).
+5. The job's fields follow its current version: RO #, claim #, adjuster, estimator, loss date, deductible, mileage
+   in, customer, insurance company and vehicle - unless a person typed the field in by hand (logged as `manual`). A
+   value the current version doesn't print keeps the job's. Every change goes through `set_field()` -> `audit_log`.
 
 ## Later features - tables they add
 
