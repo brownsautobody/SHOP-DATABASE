@@ -4,7 +4,7 @@ The current picture of the project in one page: what works, how it fits together
 **Update this file in the same commit as any change to features, pages, tables, tools or plans** (a git hook checks).
 Read this first instead of re-reading the code; open the files named here only when you need the detail.
 
-Last updated: 2026-10-19 (branch `refactor-foundation`, working through `REFACTOR_PROMPT.md` step by step)
+Last updated: 2026-10-19 (branch `refactor-foundation`: the parser / database refactor, Steps 0-6, done)
 
 ## What it is
 Brown's Body Shop's job database. Upload a CCC ONE or Mitchell estimate PDF -> it's read, checked against its own
@@ -147,7 +147,8 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 ## Data on this machine (git-ignored, customer data)
 - `data/shop.db` - real database: 2 jobs, 2 documents (parser 2026.10.14), knowledge base loaded.
 - `data/test2026/shop.db` - test copy of 54 real 2026 CCC estimates / 41 jobs (all closed - they were filed as
-  archived), still on parser 2026.10.13b. Migrated to 0002 on 2026-10-19 (backup in `data/test2026/backups/`).
+  archived). Migrated to 0007; re-read with parser 2026.10.19b on 2026-10-19 (history only, nothing changed: closed).
+  Backups before every migration and re-read in `data/test2026/backups/`.
 - `data/test/` - older sample test copy (migrated to 0002). `samples/` - sample PDFs (7 CCC, 7 Mitchell).
 - To use a test copy: `SHOP_DATA_DIR=data\test2026` (Windows `set SHOP_DATA_DIR=data\test2026`; from WSL also
   `WSLENV=SHOP_DATA_DIR`). Stored file paths are Windows paths, so run the tools with the Windows Python.
@@ -171,6 +172,16 @@ features only add tables. Full design and future tables: `docs/data-model.md`.
 - `data/test2026` holds one VIN on two vehicle rows (two jobs, from before vehicles were shared); new uploads use the
   oldest. A merge tool for customers / vehicles would come later - nothing merges automatically.
 - Old branches `core-database`, `database-design`, `worktree-needs-review-flag` and a prunable worktree remain.
+
+## Refactor results (2026-10-19, `data/test2026`, 54 real CCC estimates)
+- Snapshot changes since the Step 0 baseline: 18 of 68 PDFs, only `header.loss_date` 'Days' -> '' (11, CCC blank
+  loss date) and Mitchell `header.ro_number` -> `header.estimate_id` (7). No hours or dollars changed.
+- Matching: replaying the 54 uploads in their original order gives the same 41 jobs with the old and new rules;
+  nothing goes to Waiting for a person.
+- `reparse_documents.py --all`: 54 re-read, 0 numbers changed. On a copy with the jobs reopened, job fields follow the
+  current version on 5 jobs: 1 and 7 insurance name as printed now, 2 estimator / mileage / customer case / insurance
+  filled, 7 customer CURRIE -> Curry (spelling on the newer estimate), 29 the longer printed customer name, and
+  **job 6 customer IMO, STEVEN-AND-TRACY -> CHESSER, DON - worth a look** (the newest version names a different owner).
 
 ## Change history (newest first; add one line per commit)
 - 2026-10-19 - Refactor Step 6: closing for bookkeeping - checklist (migration 0007), Close only when all required
